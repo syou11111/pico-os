@@ -1,0 +1,4 @@
+build/
+downloaded_*
+*.tmp
+.DS_Store

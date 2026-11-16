@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PicoOS Web Studio (Web Serial)</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #38bdf8;
+    --accent-hover: #0ea5e9;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --term-bg: #05080f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .badge {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: #1f2937;
+    color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .conn-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: #1f242c;
+    border: 1px solid var(--border);
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+  }
+  .dot.connected { background: var(--green); }
+  button {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: #21262d;
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  button:hover:not(:disabled) {
+    background: #30363d;
+    border-color: #8b949e;
+  }
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  button.primary {
+    background: #0284c7;
+    border-color: #0ea5e9;
+    color: #fff;
+  }
+  button.primary:hover:not(:disabled) {
+    background: #0369a1;
+  }
+  button.success {
+    background: #15803d;
+    border-color: #22c55e;
+    color: #fff;
+  }
+  button.success:hover:not(:disabled) {
+    background: #166534;
+  }
+  button.danger {
+    background: #991b1b;
+    border-color: #ef4444;
+    color: #fff;
+  }
+  #unsupported-banner {
+    display: none;
+    margin: 12px 16px 0;
+    padding: 10px 14px;
+    background: #451a1a;
+    border: 1px solid var(--red);
+    border-radius: 8px;
+    color: #fecaca;
+  }
+  main {
+    display: grid;
+    grid-template-columns: minmax(420px, 1.25fr) minmax(340px, 1fr);
+    gap: 14px;
+    padding: 14px 16px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--accent);
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .toolbar button {
+    padding: 4px 9px;
+    font-size: 12px;
+  }
+  #terminal {
+    background: var(--term-bg);
+    color: #e2e8f0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.32;
+    height: 410px;
+    overflow: hidden;
+    white-space: pre;
+    outline: none;
+    user-select: text;
+  }
+  #terminal:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+  }
+  .term-row { height: 17px; }
+  .vt-rev { background: #e2e8f0; color: #05080f; }
+  .vt-blue { color: #60a5fa; }
+  .vt-cur { background: #22c55e; color: #05080f; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  input[type="text"], select, textarea {
+    background: #0d1117;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  input[type="text"]:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  #code-editor {
+    width: 100%;
+    height: 290px;
+    resize: vertical;
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    tab-size: 4;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+  .xfer-box {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #status-log {
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 12px;
+    color: #a5f3fc;
+    background: #0b1220;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    min-height: 30px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span>PicoOS Web Studio</span>
+    <span class="badge">Web Serial (v0.4)</span>
+  </div>
+  <div class="conn-controls">
+    <div class="status-pill">
+      <span id="conn-dot" class="dot"></span>
+      <span id="conn-text">未接続</span>
+    </div>
+    <button id="btn-connect" class="primary">🔌 PicoOS に接続</button>
+    <button id="btn-disconnect" disabled>切断</button>
+  </div>
+</header>
+
+<div id="unsupported-banner">
+  このブラウザは Web Serial API に対応していません。Windows / Chromebook の <strong>Google Chrome</strong> または <strong>Microsoft Edge</strong> で開いてください。
+</div>
+
+<main>
+  <!-- Left: VT100 Terminal -->
+  <section class="card">
+    <div class="card-title">
+      <span>🖥️ 対話シェル &amp; vi ターミナル (80×24)</span>
+      <span class="muted">枠内をクリックしてキーボード入力</span>
+    </div>
+    <div class="toolbar">
+      <button data-cmd="help">help</button>
+      <button data-cmd="ps">ps</button>
+      <button data-cmd="ls">ls</button>
+      <button data-cmd="df">df</button>
+      <button data-cmd="clear">clear</button>
+      <button data-raw="\x03" class="danger">Ctrl+C</button>
+      <button data-raw="\x04">Ctrl+D</button>
+      <button data-raw="\x1b">ESC</button>
+    </div>
+    <div id="terminal" tabindex="0" aria-label="PicoOS VT100 Terminal"></div>
+    <div class="row">
+      <input id="cmd-input" type="text" placeholder="コマンド入力して Enter (例: vi hello.c, cc -r fib.c)" style="flex:1;">
+      <button id="btn-send-cmd">送信</button>
+    </div>
+  </section>
+
+  <!-- Right: C Editor & File Transfer -->
+  <section class="card">
+    <div class="card-title">
+      <span>⚡ Cコード エディタ &amp; ファイル送受信</span>
+      <span id="byte-counter" class="muted">0 / 4032 B</span>
+    </div>
+    <div class="row">
+      <label class="muted">ファイル名:</label>
+      <input id="editor-filename" type="text" value="demo.c" style="width: 140px;">
+      <select id="preset-select" style="flex:1;">
+        <option value="">-- サンプルを読み込む --</option>
+        <option value="demo">グラフィックス + 計算 (demo.c)</option>
+        <option value="fib">再帰フィボナッチ (fib.c)</option>
+        <option value="led">Lチカ + カウンタ (blink.c)</option>
+        <option value="hello">最小 Hello World (hello.c)</option>
+      </select>
+    </div>
+    <textarea id="code-editor" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="btn-upload-run" class="success" disabled>🚀 送信＆コンパイル実行</button>
+      <button id="btn-upload-editor" class="primary" disabled>📤 Picoへ送信 (rx)</button>
+      <button id="btn-load-from-pico" disabled>📥 Picoから読込 (tx)</button>
+    </div>
+
+    <div class="xfer-box">
+      <div class="card-title"><span>📁 ローカルPC ⇄ PicoFS ファイル送受信</span></div>
+      <div class="row">
+        <input id="local-file-input" type="file" style="flex:1;">
+        <input id="upload-remote-name" type="text" placeholder="保存名 (空欄=元ファイル名)" style="width:160px;">
+        <button id="btn-put-file" disabled>送信 (put)</button>
+      </div>
+      <div class="row">
+        <input id="download-remote-name" type="text" placeholder="Pico上のファイル名 (例: a.out)" style="flex:1;">
+        <button id="btn-get-file" disabled>PCへ保存 (get)</button>
+      </div>
+      <div id="status-log">PicoOS を USB で接続し、「PicoOS に接続」を押してください。</div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const MAX_FILE_BYTES = 4032;
+  const ROWS = 24;
+  const COLS = 80;
+
+  const PRESETS = {
+    demo: `#include <stdio.h>
+
+int sum_squares(int n) {
+    int total = 0;
+    for (int i = 1; i <= n; i++) {
+        total += i * i;
+    }
+    return total;
+}
+
+int main(void) {
+    int ans = sum_squares(6);
+    printf("PicoOS Web Studio Demo!\\n");
+    printf("sum_squares(6) = %d\\n", ans);
+
+    cls(rgb(8, 12, 24));
+    rect(0, 0, 160, 18, rgb(0, 80, 140));
+    text(8, 5, "PicoOS Web Studio", rgb(0, 255, 255), rgb(0, 80, 140));
+
+    for (int i = 0; i < 6; i++) {
+        int h = (i + 1) * 9;
+        int c = rgb(40 + i * 40, 220 - i * 25, 160);
+        rect(14 + i * 22, 86 - h, 16, h, c);
+    }
+    text(8, 104, "Compiled on RP2040!", rgb(0, 255, 128), rgb(8, 12, 24));
+    return 0;
+}`,
+    fib: `#include <stdio.h>
+
+int fib(int n) {
+    if (n <= 1) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+int main(void) {
+    for (int i = 0; i <= 12; i++) {
+        printf("fib(%2d) = %d\\n", i, fib(i));
+    }
+    return 0;
+}`,
+    led: `#include <stdio.h>
+
+int main(void) {
+    printf("Blinking LED 5 times...\\n");
+    for (int i = 1; i <= 5; i++) {
+        led(1);
+        printf("LED ON  (%d/5)\\n", i);
+        sleep_ms(200);
+        led(0);
+        sleep_ms(200);
+    }
+    printf("Done!\\n");
+    return 0;
+}`,
+    hello: `#include <stdio.h>
+
+int main(void) {
+    printf("Hello from PicoOS!\\n");
+    printf("Uptime: %d ms\\n", ticks());
+    return 0;
+}`
+  };
+
+  /* ---------- DOM References ---------- */
+  const termEl = document.getElementById("terminal");
+  const cmdInput = document.getElementById("cmd-input");
+  const btnSendCmd = document.getElementById("btn-send-cmd");
+  const btnConnect = document.getElementById("btn-connect");
+  const btnDisconnect = document.getElementById("btn-disconnect");
+  const connDot = document.getElementById("conn-dot");
+  const connText = document.getElementById("conn-text");
+  const editorFilename = document.getElementById("editor-filename");
+  const presetSelect = document.getElementById("preset-select");
+  const codeEditor = document.getElementById("code-editor");
+  const byteCounter = document.getElementById("byte-counter");
+  const btnUploadRun = document.getElementById("btn-upload-run");
+  const btnUploadEditor = document.getElementById("btn-upload-editor");
+  const btnLoadFromPico = document.getElementById("btn-load-from-pico");
+  const localFileInput = document.getElementById("local-file-input");
+  const uploadRemoteName = document.getElementById("upload-remote-name");
+  const btnPutFile = document.getElementById("btn-put-file");
+  const downloadRemoteName = document.getElementById("download-remote-name");
+  const btnGetFile = document.getElementById("btn-get-file");
+  const statusLog = document.getElementById("status-log");
+
+  if (!("serial" in navigator)) {
+    document.getElementById("unsupported-banner").style.display = "block";
+    btnConnect.disabled = true;
+  }
+
+  function setStatus(msg, color = "#a5f3fc") {
+    statusLog.textContent = msg;
+    statusLog.style.color = color;
+  }
+
+  /* ---------- Minimal VT100 Screen Grid ---------- */
+  const screen = Array.from({ length: ROWS }, () =>
+    Array.from({ length: COLS }, () => ({ ch: " ", cls: "" }))
+  );
+  let curR = 0;
+  let curC = 0;
+  let curClass = "";
+  let cursorVisible = true;
+  let escState = 0; // 0=normal, 1=ESC, 2=CSI
+  let csiBuf = "";
+  let renderPending = false;
+
+  function clearRow(r, fromCol = 0, toCol = COLS) {
+    for (let c = fromCol; c < toCol; c++) {
+      screen[r][c].ch = " ";
+      screen[r][c].cls = "";
+    }
+  }
+
+  function clearScreen() {
+    for (let r = 0; r < ROWS; r++) clearRow(r, 0, COLS);
+    curR = 0;
+    curC = 0;
+  }
+
+  function scrollUp() {
+    screen.shift();
+    screen.push(Array.from({ length: COLS }, () => ({ ch: " ", cls: "" })));
+    curR = ROWS - 1;
+  }
+
+  function putChar(ch) {
+    if (curC >= COLS) {
+      curC = 0;
+      if (curR < ROWS - 1) curR++;
+      else scrollUp();
+    }
+    screen[curR][curC].ch = ch;
+    screen[curR][curC].cls = curClass;
+    curC++;
+  }
+
+  function handleCSI(seq, finalChar) {
+    const clean = seq.startsWith("?") ? seq.slice(1) : seq;
+    const parts = clean ? clean.split(";").map((x) => parseInt(x, 10) || 0) : [];
+
+    if (finalChar === "H" || finalChar === "f") {
+      const r = (parts[0] || 1) - 1;
+      const c = (parts[1] || 1) - 1;
+      curR = Math.max(0, Math.min(ROWS - 1, r));
+      curC = Math.max(0, Math.min(COLS - 1, c));
+    } else if (finalChar === "J") {
+      if ((parts[0] || 0) === 2) clearScreen();
+    } else if (finalChar === "K") {
+      const mode = parts[0] || 0;
+      if (mode === 2) clearRow(curR, 0, COLS);
+      else if (mode === 0) clearRow(curR, curC, COLS);
+      else if (mode === 1) clearRow(curR, 0, curC + 1);
+    } else if (finalChar === "m") {
+      const code = parts[0] || 0;
+      if (code === 0) curClass = "";
+      else if (code === 7) curClass = "vt-rev";
+      else if (code === 34) curClass = "vt-blue";
+    } else if (seq.startsWith("?") && parts[0] === 25) {
+      cursorVisible = finalChar === "h";
+    }
+  }
+
+  function vtWrite(text) {
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const code = text.charCodeAt(i);
+
+      if (escState === 1) {
+        if (ch === "[") {
+          escState = 2;
+          csiBuf = "";
+        } else {
+          escState = 0;
+        }
+        continue;
+      }
+      if (escState === 2) {
+        if (code >= 0x40 && code <= 0x7e) {
+          handleCSI(csiBuf, ch);
+          escState = 0;
+        } else {
+          csiBuf += ch;
+          if (csiBuf.length > 24) escState = 0;
+        }
+        continue;
+      }
+
+      if (code === 0x1b) {
+        escState = 1;
+      } else if (ch === "\r") {
+        curC = 0;
+      } else if (ch === "\n") {
+        if (curR < ROWS - 1) curR++;
+        else scrollUp();
+      } else if (ch === "\b" || code === 0x7f) {
+        if (curC > 0) curC--;
+      } else if (ch === "\t") {
+        const nextTab = (Math.floor(curC / 4) + 1) * 4;
+        while (curC < nextTab && curC < COLS) putChar(" ");
+      } else if (code >= 0x20) {
+        putChar(ch);
+      }
+    }
+    scheduleRender();
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function renderTerminal() {
+    renderPending = false;
+    let html = "";
+    for (let r = 0; r < ROWS; r++) {
+      html += '<div class="term-row">';
+      let c = 0;
+      while (c < COLS) {
+        const isCur = cursorVisible && r === curR && c === curC;
+        const cell = screen[r][c];
+        const cls = isCur ? "vt-cur" : cell.cls;
+        if (isCur) {
+          html += `<span class="vt-cur">${escapeHtml(cell.ch)}</span>`;
+          c++;
+          continue;
+        }
+        let run = cell.ch;
+        let nc = c + 1;
+        while (nc < COLS && !(cursorVisible && r === curR && nc === curC) && screen[r][nc].cls === cls) {
+          run += screen[r][nc].ch;
+          nc++;
+        }
+        if (cls) html += `<span class="${cls}">${escapeHtml(run)}</span>`;
+        else html += escapeHtml(run);
+        c = nc;
+      }
+      html += "</div>";
+    }
+    termEl.innerHTML = html;
+  }
+
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(renderTerminal);
+  }
+
+  renderTerminal();
+
+  /* ---------- Web Serial State & Line Transfer Hook ---------- */
+  let port = null;
+  let reader = null;
+  let writer = null;
+  let keepReading = false;
+  let transferBusy = false;
+  let lineHook = null;
+  let lineBuffer = "";
+  const textDecoder = new TextDecoder();
+  const textEncoder = new TextEncoder();
+
+  function setConnectedUI(connected) {
+    connDot.classList.toggle("connected", connected);
+    connText.textContent = connected ? "接続中 (115200 bps)" : "未接続";
+    btnConnect.disabled = connected;
+    btnDisconnect.disabled = !connected;
+    btnUploadRun.disabled = !connected;
+    btnUploadEditor.disabled = !connected;
+    btnLoadFromPico.disabled = !connected;
+    btnPutFile.disabled = !connected;
+    btnGetFile.disabled = !connected;
+  }
+
+  async function writeBytes(bytes) {
+    if (!writer) return;
+    await writer.write(bytes);
+  }
+
+  async function writeText(str) {
+    await writeBytes(textEncoder.encode(str));
+  }
+
+  async function readLoop() {
+    while (keepReading && port && port.readable) {
+      reader = port.readable.getReader();
+      try {
+        while (keepReading) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          const text = textDecoder.decode(value, { stream: true });
+          if (lineHook) {
+            lineBuffer += text;
+            let nlIdx;
+            while ((nlIdx = lineBuffer.indexOf("\n")) !== -1) {
+              const line = lineBuffer.slice(0, nlIdx).replace(/\r/g, "").trim();
+              lineBuffer = lineBuffer.slice(nlIdx + 1);
+              if (lineHook) lineHook(line);
+            }
+          } else {
+            vtWrite(text);
+          }
+        }
+      } catch (err) {
+        if (keepReading) setStatus(`シリアルエラー: ${err.message}`, "#fca5a5");
+      } finally {
+        reader.releaseLock();
+        reader = null;
+      }
+    }
+  }
+
+  async function connectSerial() {
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+      writer = port.writable.getWriter();
+      keepReading = true;
+      setConnectedUI(true);
+      setStatus("PicoOS に接続しました。", "#86efac");
+      readLoop();
+      await writeText("\r");
+      termEl.focus();
+    } catch (err) {
+      setStatus(`接続キャンセルまたはエラー: ${err.message}`, "#fde047");
+    }
+  }
+
+  async function disconnectSerial() {
+    keepReading = false;
+    try { if (reader) await reader.cancel(); } catch (_) {}
+    try { if (writer) { writer.releaseLock(); writer = null; } } catch (_) {}
+    try { if (port) { await port.close(); port = null; } } catch (_) {}
+    lineHook = null;
+    setConnectedUI(false);
+    setStatus("切断しました。", "#94a3b8");
+  }
+
+  btnConnect.addEventListener("click", connectSerial);
+  btnDisconnect.addEventListener("click", disconnectSerial);
+
+  /* ---------- CRC16-CCITT & Transfer Protocol ---------- */
+  function crc16Ccitt(bytes) {
+    let crc = 0xFFFF;
+    for (let i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i] << 8;
+      for (let b = 0; b < 8; b++) {
+        crc = (crc & 0x8000) ? (((crc << 1) ^ 0x1021) & 0xFFFF) : ((crc << 1) & 0xFFFF);
+      }
+    }
+    return crc;
+  }
+
+  function bytesToHex(bytes) {
+    let s = "";
+    for (let i = 0; i < bytes.length; i++) {
+      s += bytes[i].toString(16).padStart(2, "0").toUpperCase();
+    }
+    return s;
+  }
+
+  function hexToBytes(hexStr) {
+    const clean = hexStr.replace(/\s+/g, "");
+    if (clean.length % 2 !== 0) throw new Error("Odd hex length");
+    const out = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      const val = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+      if (Number.isNaN(val)) throw new Error("Invalid hex byte");
+      out[i] = val;
+    }
+    return out;
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function waitForLines(handler, timeoutMs = 6000) {
+    return new Promise((resolve, reject) => {
+      lineBuffer = "";
+      const timer = setTimeout(() => {
+        lineHook = null;
+        reject(new Error("通信タイムアウト"));
+      }, timeoutMs);
+      lineHook = (line) => {
+        try {
+          const done = handler(line);
+          if (done !== undefined) {
+            clearTimeout(timer);
+            lineHook = null;
+            resolve(done);
+          }
+        } catch (err) {
+          clearTimeout(timer);
+          lineHook = null;
+          reject(err);
+        }
+      };
+    });
+  }
+
+  async function uploadBytes(remoteName, data) {
+    if (!port || !writer) throw new Error("未接続です");
+    if (transferBusy) throw new Error("別の転送が実行中です");
+    if (!remoteName) throw new Error("ファイル名が空です");
+    if (data.length > MAX_FILE_BYTES) {
+      throw new Error(`サイズ上限オーバー (${data.length} > ${MAX_FILE_BYTES} B)`);
+    }
+
+    transferBusy = true;
+    try {
+      const crc = crc16Ccitt(data);
+      const crcHex = crc.toString(16).padStart(4, "0").toUpperCase();
+      setStatus(`送信開始: ${remoteName} (${data.length} B)...`);
+
+      const readyP = waitForLines((line) => {
+        if (line.startsWith("@READY")) return true;
+        if (line.startsWith("@ERR")) throw new Error(line);
+      }, 4000);
+      await writeText(`rx ${remoteName}\r`);
+      await readyP;
+
+      const okP = waitForLines((line) => {
+        if (line.startsWith("@OK")) return line;
+        if (line.startsWith("@ERR")) throw new Error(line);
+      }, 6000);
+
+      await writeText(`@BEGIN ${data.length} ${crcHex}\r\n`);
+      const hex = bytesToHex(data);
+      for (let i = 0; i < hex.length; i += 64) {
+        await writeText(hex.slice(i, i + 64) + "\r\n");
+        await sleep(2);
+      }
+      await writeText("@END\r\n");
+      await okP;
+
+      vtWrite(`\r\n[Studio] Uploaded ${remoteName} (${data.length} B, CRC ${crcHex})\r\n`);
+      setStatus(`送信完了: ${remoteName} (${data.length} B, CRC ${crcHex})`, "#86efac");
+      await writeText("\r");
+    } finally {
+      lineHook = null;
+      transferBusy = false;
+    }
+  }
+
+  async function downloadBytes(remoteName) {
+    if (!port || !writer) throw new Error("未接続です");
+    if (transferBusy) throw new Error("別の転送が実行中です");
+    if (!remoteName) throw new Error("ファイル名が空です");
+
+    transferBusy = true;
+    try {
+      setStatus(`受信中: ${remoteName}...`);
+      let expectedSize = null;
+      let expectedCrc = null;
+      const chunks = [];
+
+      const rxP = waitForLines((line) => {
+        if (line.startsWith("@ERR")) throw new Error(line);
+        if (line.startsWith("@BEGIN ")) {
+          const parts = line.split(/\s+/);
+          if (parts.length < 4) throw new Error("不正な @BEGIN ヘッダ");
+          expectedSize = parseInt(parts[2], 10);
+          expectedCrc = parseInt(parts[3], 16);
+          return undefined;
+        }
+        if (expectedSize !== null) {
+          if (line.startsWith("@END")) {
+            return chunks.join("");
+          }
+          chunks.push(line);
+        }
+      }, 8000);
+
+      await writeText(`tx ${remoteName}\r`);
+      const hexPayload = await rxP;
+      const data = hexToBytes(hexPayload);
+      if (data.length !== expectedSize) {
+        throw new Error(`サイズ不一致 (${data.length} != ${expectedSize})`);
+      }
+      const actualCrc = crc16Ccitt(data);
+      if (actualCrc !== expectedCrc) {
+        throw new Error(`CRC不一致 (${actualCrc.toString(16)} != ${expectedCrc.toString(16)})`);
+      }
+
+      const crcHex = actualCrc.toString(16).padStart(4, "0").toUpperCase();
+      vtWrite(`\r\n[Studio] Downloaded ${remoteName} (${data.length} B, CRC ${crcHex})\r\n`);
+      setStatus(`受信完了: ${remoteName} (${data.length} B, CRC ${crcHex})`, "#86efac");
+      await writeText("\r");
+      return data;
+    } finally {
+      lineHook = null;
+      transferBusy = false;
+    }
+  }
+
+  /* ---------- Terminal Keyboard & Toolbar ---------- */
+  termEl.addEventListener("keydown", async (e) => {
+    if (!writer || transferBusy) return;
+    if (e.ctrlKey && e.key.toLowerCase() === "v") return; // allow paste event
+
+    let seq = null;
+    if (e.ctrlKey && e.key.length === 1) {
+      const code = e.key.toUpperCase().charCodeAt(0);
+      if (code >= 65 && code <= 90) {
+        seq = String.fromCharCode(code - 64);
+      }
+    } else if (e.key === "Enter") seq = "\r";
+    else if (e.key === "Backspace") seq = "\x7f";
+    else if (e.key === "Tab") seq = "\t";
+    else if (e.key === "Escape") seq = "\x1b";
+    else if (e.key === "ArrowUp") seq = "\x1b[A";
+    else if (e.key === "ArrowDown") seq = "\x1b[B";
+    else if (e.key === "ArrowRight") seq = "\x1b[C";
+    else if (e.key === "ArrowLeft") seq = "\x1b[D";
+    else if (e.key === "Home") seq = "\x1b[H";
+    else if (e.key === "End") seq = "\x1b[F";
+    else if (e.key === "Delete") seq = "\x1b[3~";
+    else if (e.key.length === 1 && !e.metaKey && !e.altKey) seq = e.key;
+
+    if (seq !== null) {
+      e.preventDefault();
+      await writeText(seq);
+    }
+  });
+
+  termEl.addEventListener("paste", async (e) => {
+    if (!writer || transferBusy) return;
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    if (text) {
+      e.preventDefault();
+      await writeText(text.replace(/\r?\n/g, "\r"));
+    }
+  });
+
+  document.querySelectorAll(".toolbar button").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!writer || transferBusy) return;
+      if (btn.dataset.cmd) {
+        await writeText(btn.dataset.cmd + "\r");
+      } else if (btn.dataset.raw) {
+        const raw = btn.dataset.raw
+          .replace("\\x03", "\x03")
+          .replace("\\x04", "\x04")
+          .replace("\\x1b", "\x1b");
+        await writeText(raw);
+      }
+      termEl.focus();
+    });
+  });
+
+  function sendInputCmd() {
+    if (!writer || transferBusy) return;
+    const val = cmdInput.value;
+    writeText(val + "\r");
+    cmdInput.value = "";
+  }
+  btnSendCmd.addEventListener("click", sendInputCmd);
+  cmdInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendInputCmd();
+    }
+  });
+
+  /* ---------- Editor & Transfer Buttons ---------- */
+  function updateByteCounter() {
+    const len = textEncoder.encode(codeEditor.value).length;
+    byteCounter.textContent = `${len} / ${MAX_FILE_BYTES} B`;
+    byteCounter.style.color = len > MAX_FILE_BYTES ? "#ef4444" : "#8b949e";
+  }
+
+  codeEditor.value = PRESETS.demo;
+  updateByteCounter();
+  codeEditor.addEventListener("input", updateByteCounter);
+  codeEditor.addEventListener("keydown", (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const s = codeEditor.selectionStart;
+      const end = codeEditor.selectionEnd;
+      codeEditor.value = codeEditor.value.slice(0, s) + "    " + codeEditor.value.slice(end);
+      codeEditor.selectionStart = codeEditor.selectionEnd = s + 4;
+      updateByteCounter();
+    }
+  });
+
+  presetSelect.addEventListener("change", () => {
+    const key = presetSelect.value;
+    if (!key || !PRESETS[key]) return;
+    codeEditor.value = PRESETS[key];
+    const nameMap = { demo: "demo.c", fib: "fib.c", led: "blink.c", hello: "hello.c" };
+    editorFilename.value = nameMap[key] || "main.c";
+    updateByteCounter();
+  });
+
+  btnUploadEditor.addEventListener("click", async () => {
+    try {
+      const name = editorFilename.value.trim();
+      const data = textEncoder.encode(codeEditor.value);
+      await uploadBytes(name, data);
+    } catch (err) {
+      setStatus(`エラー: ${err.message}`, "#fca5a5");
+    }
+  });
+
+  btnUploadRun.addEventListener("click", async () => {
+    try {
+      const name = editorFilename.value.trim();
+      const data = textEncoder.encode(codeEditor.value);
+      await uploadBytes(name, data);
+      await sleep(80);
+      await writeText(`cc -r ${name}\r`);
+      termEl.focus();
+    } catch (err) {
+      setStatus(`エラー: ${err.message}`, "#fca5a5");
+    }
+  });
+
+  btnLoadFromPico.addEventListener("click", async () => {
+    try {
+      const name = editorFilename.value.trim();
+      const data = await downloadBytes(name);
+      codeEditor.value = textDecoder.decode(data);
+      updateByteCounter();
+    } catch (err) {
+      setStatus(`エラー: ${err.message}`, "#fca5a5");
+    }
+  });
+
+  btnPutFile.addEventListener("click", async () => {
+    try {
+      const file = localFileInput.files && localFileInput.files[0];
+      if (!file) throw new Error("ローカルファイルを選択してください");
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const remote = uploadRemoteName.value.trim() || file.name;
+      await uploadBytes(remote, buf);
+    } catch (err) {
+      setStatus(`エラー: ${err.message}`, "#fca5a5");
+    }
+  });
+
+  btnGetFile.addEventListener("click", async () => {
+    try {
+      const remote = downloadRemoteName.value.trim();
+      const data = await downloadBytes(remote);
+      const blob = new Blob([data], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = remote;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setStatus(`エラー: ${err.message}`, "#fca5a5");
+    }
+  });
+})();
+</script>
+</body>
+</html>
