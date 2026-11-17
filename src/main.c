@@ -44,21 +44,22 @@ int main(void) {
         cyw43_ok = true;
     }
 
+    fs_init();
+    st7735_load_saved_pins();
     st7735_init();
     console_init();
-    fs_init();
 
     static fs_file_info_t init_list[1];
     if (fs_list(init_list, 1) == 0) {
         shell_seed_samples();
     }
 
-    console_puts("Booting PicoOS v0.4...\n", COLOR_CYAN);
+    console_puts("Booting PicoOS v0.5...\n", COLOR_CYAN);
     console_puts("Arch : ARM Cortex-M0+\n", COLOR_WHITE);
     console_puts("Disp : ST7735S 160x128\n", COLOR_WHITE);
     console_puts("Tick : 1000 Hz PendSV\n", COLOR_WHITE);
     console_puts("FS   : PicoFS 256KB OK\n", COLOR_GREEN);
-    console_puts("Apps : vi + cc VM ready\n", COLOR_GREEN);
+    console_puts("HW   : GPIO/PWM/ADC/I2C/SPI\n", COLOR_GREEN);
     console_puts("Type 'help' on USB.\n", COLOR_YELLOW);
 
     os_init();

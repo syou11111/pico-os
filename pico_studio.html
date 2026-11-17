@@ -236,7 +236,7 @@
 <header>
   <div class="brand">
     <span>PicoOS Web Studio</span>
-    <span class="badge">Web Serial (v0.4)</span>
+    <span class="badge">Web Serial (v0.5)</span>
   </div>
   <div class="conn-controls">
     <div class="status-pill">
@@ -263,6 +263,8 @@
       <button data-cmd="help">help</button>
       <button data-cmd="ps">ps</button>
       <button data-cmd="ls">ls</button>
+      <button data-cmd="pinout">pinout</button>
+      <button data-cmd="disp">disp</button>
       <button data-cmd="df">df</button>
       <button data-cmd="clear">clear</button>
       <button data-raw="\x03" class="danger">Ctrl+C</button>
@@ -287,6 +289,8 @@
       <input id="editor-filename" type="text" value="demo.c" style="width: 140px;">
       <select id="preset-select" style="flex:1;">
         <option value="">-- サンプルを読み込む --</option>
+        <option value="game">パドルゲーム (game.c)</option>
+        <option value="sensor">&lt;gpio.h&gt; + 温度/ADC (sensor.c)</option>
         <option value="demo">グラフィックス + 計算 (demo.c)</option>
         <option value="fib">再帰フィボナッチ (fib.c)</option>
         <option value="led">Lチカ + カウンタ (blink.c)</option>
@@ -385,6 +389,59 @@ int main(void) {
     printf("Hello from PicoOS!\\n");
     printf("Uptime: %d ms\\n", ticks());
     return 0;
+}`,
+    sensor: `#include <stdio.h>
+#include <gpio.h>
+
+int main(void) {
+    printf("=== PicoOS Sensor Demo ===\\n");
+    for (int i = 0; i < 5; i++) {
+        printf("[%d] Temp: %d C | GP26: %d\\n",
+               i + 1, temp_c(), adc_read(26));
+        sleep_ms(300);
+    }
+    return 0;
+}`,
+    game: `#include <stdio.h>
+#include <gpio.h>
+
+int main(void) {
+    int bg = rgb(8, 12, 24);
+    int px = 64, old_px = 64;
+    int bx = 80, by = 40, ox = 80, oy = 40;
+    int vx = 2, vy = 2, score = 0;
+    cls(bg);
+    text(4, 2, "PADDLE GAME (A/D, Q=quit)", rgb(0, 255, 255), bg);
+    rect(0, 12, 160, 1, rgb(0, 160, 180));
+    printf("Paddle Game: A/D or Left/Right, Q to quit\\n");
+    while (1) {
+        int k = key_poll();
+        if (k == 'q' || k == 'Q' || k == KEY_ESC) break;
+        if (k == 'a' || k == 'A' || k == KEY_LEFT) px -= 10;
+        if (k == 'd' || k == 'D' || k == KEY_RIGHT) px += 10;
+        if (px < 2) px = 2;
+        if (px > 126) px = 126;
+        bx += vx; by += vy;
+        if (bx <= 2 || bx >= 154) vx = -vx;
+        if (by <= 15) vy = -vy;
+        if (by >= 112 && by <= 117 && bx + 4 >= px && bx <= px + 32 && vy > 0) {
+            vy = -vy;
+            score++;
+            printf("Score: %d\\n", score);
+        }
+        if (by > 124) {
+            text(48, 60, "GAME OVER!", rgb(255, 60, 60), bg);
+            printf("Game Over! Final Score: %d\\n", score);
+            break;
+        }
+        if (old_px != px) rect(old_px, 118, 32, 5, bg);
+        rect(ox, oy, 4, 4, bg);
+        rect(px, 118, 32, 5, rgb(0, 255, 128));
+        rect(bx, by, 4, 4, rgb(255, 220, 0));
+        old_px = px; ox = bx; oy = by;
+        sleep_ms(30);
+    }
+    return score;
 }`
   };
 
@@ -915,7 +972,10 @@ int main(void) {
     const key = presetSelect.value;
     if (!key || !PRESETS[key]) return;
     codeEditor.value = PRESETS[key];
-    const nameMap = { demo: "demo.c", fib: "fib.c", led: "blink.c", hello: "hello.c" };
+    const nameMap = {
+      game: "game.c", sensor: "sensor.c",
+      demo: "demo.c", fib: "fib.c", led: "blink.c", hello: "hello.c"
+    };
     editorFilename.value = nameMap[key] || "main.c";
     updateByteCounter();
   });

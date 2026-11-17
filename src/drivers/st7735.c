@@ -1,6 +1,7 @@
 #include "st7735.h"
 #include "font5x7.h"
 #include "../kernel/kernel.h"
+#include "../fs/fs.h"
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 #include "hardware/pwm.h"
@@ -30,9 +31,32 @@
 #define CMD_GMCTRP1 0xE0
 #define CMD_GMCTRN1 0xE1
 
+#define DISP_CFG_FILE  ".disp.cfg"
+#define DISP_CFG_MAGIC 0x44495350UL /* "DISP" */
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    st7735_pins_t pins;
+} disp_cfg_t;
+
+static st7735_pins_t cur_pins = {
+    .spi_bus = 0,
+    .cs   = ST7735_DEFAULT_CS,
+    .sck  = ST7735_DEFAULT_SCK,
+    .mosi = ST7735_DEFAULT_MOSI,
+    .rst  = ST7735_DEFAULT_RST,
+    .dc   = ST7735_DEFAULT_DC,
+    .blk  = ST7735_DEFAULT_BLK
+};
+
 static volatile bool spi_locked = false;
 static uint bl_pwm_slice = 0;
 static uint bl_pwm_chan = 0;
+static bool display_initialized = false;
+
+static inline spi_inst_t *active_spi(void) {
+    return (cur_pins.spi_bus == 1) ? spi1 : spi0;
+}
 
 static void lock_spi(void) {
     while (true) {
@@ -53,15 +77,15 @@ static void unlock_spi(void) {
     os_exit_critical(primask);
 }
 
-static inline void cs_select(void)   { gpio_put(ST7735_PIN_CS, 0); }
-static inline void cs_deselect(void) { gpio_put(ST7735_PIN_CS, 1); }
-static inline void dc_command(void)  { gpio_put(ST7735_PIN_DC, 0); }
-static inline void dc_data(void)     { gpio_put(ST7735_PIN_DC, 1); }
+static inline void cs_select(void)   { gpio_put(cur_pins.cs, 0); }
+static inline void cs_deselect(void) { gpio_put(cur_pins.cs, 1); }
+static inline void dc_command(void)  { gpio_put(cur_pins.dc, 0); }
+static inline void dc_data(void)     { gpio_put(cur_pins.dc, 1); }
 
 static void write_cmd(uint8_t cmd) {
     dc_command();
     cs_select();
-    spi_write_blocking(ST7735_SPI_PORT, &cmd, 1);
+    spi_write_blocking(active_spi(), &cmd, 1);
     cs_deselect();
 }
 
@@ -69,7 +93,7 @@ static void write_data(const uint8_t *data, size_t len) {
     if (len == 0) return;
     dc_data();
     cs_select();
-    spi_write_blocking(ST7735_SPI_PORT, data, len);
+    spi_write_blocking(active_spi(), data, len);
     cs_deselect();
 }
 
@@ -94,6 +118,105 @@ static void set_addr_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) 
     write_cmd(CMD_RAMWR);
 }
 
+static bool is_valid_user_gpio(uint8_t pin) {
+    return (pin <= 22) || (pin >= 26 && pin <= 28);
+}
+
+static int resolve_spi_bus(uint8_t sck, uint8_t mosi) {
+    bool is_spi0_sck  = (sck == 2 || sck == 6 || sck == 18);
+    bool is_spi0_mosi = (mosi == 3 || mosi == 7 || mosi == 19);
+    if (is_spi0_sck && is_spi0_mosi) return 0;
+
+    bool is_spi1_sck  = (sck == 10 || sck == 14);
+    bool is_spi1_mosi = (mosi == 11 || mosi == 15);
+    if (is_spi1_sck && is_spi1_mosi) return 1;
+
+    return -1;
+}
+
+const st7735_pins_t *st7735_get_pins(void) {
+    return &cur_pins;
+}
+
+bool st7735_is_display_pin(uint pin) {
+    return pin == cur_pins.cs || pin == cur_pins.sck || pin == cur_pins.mosi ||
+           pin == cur_pins.rst || pin == cur_pins.dc || pin == cur_pins.blk;
+}
+
+void st7735_load_saved_pins(void) {
+    disp_cfg_t cfg;
+    if (fs_read(DISP_CFG_FILE, &cfg, sizeof(cfg)) != (int)sizeof(cfg)) {
+        return;
+    }
+    if (cfg.magic != DISP_CFG_MAGIC) return;
+
+    const st7735_pins_t *p = &cfg.pins;
+    uint8_t arr[6] = { p->cs, p->sck, p->mosi, p->rst, p->dc, p->blk };
+    for (int i = 0; i < 6; i++) {
+        if (!is_valid_user_gpio(arr[i])) return;
+        for (int j = i + 1; j < 6; j++) {
+            if (arr[i] == arr[j]) return;
+        }
+    }
+    int bus = resolve_spi_bus(p->sck, p->mosi);
+    if (bus < 0) return;
+
+    cur_pins = *p;
+    cur_pins.spi_bus = (uint8_t)bus;
+}
+
+int st7735_reconfigure_pins(uint8_t cs, uint8_t sck, uint8_t mosi,
+                            uint8_t rst, uint8_t dc, uint8_t blk, bool persist) {
+    uint8_t arr[6] = { cs, sck, mosi, rst, dc, blk };
+    for (int i = 0; i < 6; i++) {
+        if (!is_valid_user_gpio(arr[i])) return -1;
+        for (int j = i + 1; j < 6; j++) {
+            if (arr[i] == arr[j]) return -2;
+        }
+    }
+    int bus = resolve_spi_bus(sck, mosi);
+    if (bus < 0) return -3;
+
+    lock_spi();
+    if (display_initialized) {
+        pwm_set_enabled(bl_pwm_slice, false);
+        spi_deinit(active_spi());
+        gpio_deinit(cur_pins.cs);
+        gpio_deinit(cur_pins.sck);
+        gpio_deinit(cur_pins.mosi);
+        gpio_deinit(cur_pins.rst);
+        gpio_deinit(cur_pins.dc);
+        gpio_deinit(cur_pins.blk);
+        display_initialized = false;
+    }
+
+    cur_pins.spi_bus = (uint8_t)bus;
+    cur_pins.cs   = cs;
+    cur_pins.sck  = sck;
+    cur_pins.mosi = mosi;
+    cur_pins.rst  = rst;
+    cur_pins.dc   = dc;
+    cur_pins.blk  = blk;
+    unlock_spi();
+
+    st7735_init();
+
+    if (persist) {
+        disp_cfg_t cfg = { .magic = DISP_CFG_MAGIC, .pins = cur_pins };
+        if (fs_write(DISP_CFG_FILE, &cfg, sizeof(cfg)) < 0) {
+            return -4;
+        }
+    }
+    return 0;
+}
+
+int st7735_reset_pins(void) {
+    fs_delete(DISP_CFG_FILE);
+    return st7735_reconfigure_pins(
+        ST7735_DEFAULT_CS, ST7735_DEFAULT_SCK, ST7735_DEFAULT_MOSI,
+        ST7735_DEFAULT_RST, ST7735_DEFAULT_DC, ST7735_DEFAULT_BLK, false);
+}
+
 void st7735_set_backlight(uint8_t percent) {
     if (percent > 100) percent = 100;
     uint16_t level = (uint16_t)((percent * 255) / 100);
@@ -101,37 +224,37 @@ void st7735_set_backlight(uint8_t percent) {
 }
 
 void st7735_init(void) {
-    /* Initialize SPI0 at 24 MHz */
-    spi_init(ST7735_SPI_PORT, 24 * 1000 * 1000);
-    gpio_set_function(ST7735_PIN_SCK, GPIO_FUNC_SPI);
-    gpio_set_function(ST7735_PIN_MOSI, GPIO_FUNC_SPI);
+    /* Initialize SPI0 or SPI1 at 24 MHz */
+    spi_init(active_spi(), 24 * 1000 * 1000);
+    gpio_set_function(cur_pins.sck, GPIO_FUNC_SPI);
+    gpio_set_function(cur_pins.mosi, GPIO_FUNC_SPI);
 
     /* Control pins */
-    gpio_init(ST7735_PIN_CS);
-    gpio_set_dir(ST7735_PIN_CS, GPIO_OUT);
-    gpio_put(ST7735_PIN_CS, 1);
+    gpio_init(cur_pins.cs);
+    gpio_set_dir(cur_pins.cs, GPIO_OUT);
+    gpio_put(cur_pins.cs, 1);
 
-    gpio_init(ST7735_PIN_DC);
-    gpio_set_dir(ST7735_PIN_DC, GPIO_OUT);
-    gpio_put(ST7735_PIN_DC, 0);
+    gpio_init(cur_pins.dc);
+    gpio_set_dir(cur_pins.dc, GPIO_OUT);
+    gpio_put(cur_pins.dc, 0);
 
-    gpio_init(ST7735_PIN_RST);
-    gpio_set_dir(ST7735_PIN_RST, GPIO_OUT);
+    gpio_init(cur_pins.rst);
+    gpio_set_dir(cur_pins.rst, GPIO_OUT);
 
-    /* PWM Backlight on GP22 */
-    gpio_set_function(ST7735_PIN_BLK, GPIO_FUNC_PWM);
-    bl_pwm_slice = pwm_gpio_to_slice_num(ST7735_PIN_BLK);
-    bl_pwm_chan  = pwm_gpio_to_channel(ST7735_PIN_BLK);
+    /* PWM Backlight */
+    gpio_set_function(cur_pins.blk, GPIO_FUNC_PWM);
+    bl_pwm_slice = pwm_gpio_to_slice_num(cur_pins.blk);
+    bl_pwm_chan  = pwm_gpio_to_channel(cur_pins.blk);
     pwm_set_wrap(bl_pwm_slice, 255);
     pwm_set_enabled(bl_pwm_slice, true);
     st7735_set_backlight(85);
 
     /* Hardware reset */
-    gpio_put(ST7735_PIN_RST, 1);
+    gpio_put(cur_pins.rst, 1);
     sleep_ms(10);
-    gpio_put(ST7735_PIN_RST, 0);
+    gpio_put(cur_pins.rst, 0);
     sleep_ms(20);
-    gpio_put(ST7735_PIN_RST, 1);
+    gpio_put(cur_pins.rst, 1);
     sleep_ms(120);
 
     write_cmd(CMD_SWRESET);
@@ -164,7 +287,7 @@ void st7735_init(void) {
 
     write_cmd(CMD_INVOFF);
 
-    /* Landscape orientation (MY=0, MX=1, MV=1, RGB=0) -> 0x60 or 0xA0 */
+    /* Landscape orientation */
     write_cmd(CMD_MADCTL);
     write_data_byte(0xA0);
 
@@ -189,6 +312,7 @@ void st7735_init(void) {
     write_cmd(CMD_DISPON);
     sleep_ms(100);
 
+    display_initialized = true;
     st7735_fill_screen(COLOR_BLACK);
 }
 
@@ -213,10 +337,23 @@ void st7735_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t c
     uint32_t total_bytes = (uint32_t)w * (uint32_t)h * 2U;
     while (total_bytes > 0) {
         size_t chunk = total_bytes > sizeof(buf) ? sizeof(buf) : total_bytes;
-        spi_write_blocking(ST7735_SPI_PORT, buf, chunk);
+        spi_write_blocking(active_spi(), buf, chunk);
         total_bytes -= chunk;
     }
 
+    cs_deselect();
+    unlock_spi();
+}
+
+void st7735_draw_pixel(uint16_t x, uint16_t y, uint16_t color) {
+    if (x >= ST7735_WIDTH || y >= ST7735_HEIGHT) return;
+    uint8_t pix[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
+
+    lock_spi();
+    set_addr_window(x, y, x, y);
+    dc_data();
+    cs_select();
+    spi_write_blocking(active_spi(), pix, 2);
     cs_deselect();
     unlock_spi();
 }
@@ -256,7 +393,7 @@ void st7735_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg, 
         set_addr_window(x, y, x + 4, y + 6);
         dc_data();
         cs_select();
-        spi_write_blocking(ST7735_SPI_PORT, pix, sizeof(pix));
+        spi_write_blocking(active_spi(), pix, sizeof(pix));
         cs_deselect();
         unlock_spi();
         return;

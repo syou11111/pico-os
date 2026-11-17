@@ -57,7 +57,7 @@ void console_init(void) {
     st7735_fill_screen(BG_COLOR);
     st7735_fill_rect(0, 0, ST7735_WIDTH, STATUS_BAR_H, COLOR_NAVY);
     st7735_draw_hline(0, STATUS_BAR_H, ST7735_WIDTH, COLOR_TEAL);
-    st7735_draw_string(4, 3, "PicoOS v0.4", COLOR_CYAN, COLOR_NAVY, 1);
+    st7735_draw_string(4, 3, "PicoOS v0.5", COLOR_CYAN, COLOR_NAVY, 1);
     console_clear();
 }
 
@@ -65,7 +65,7 @@ void console_redraw_all(void) {
     st7735_fill_screen(BG_COLOR);
     st7735_fill_rect(0, 0, ST7735_WIDTH, STATUS_BAR_H, COLOR_NAVY);
     st7735_draw_hline(0, STATUS_BAR_H, ST7735_WIDTH, COLOR_TEAL);
-    st7735_draw_string(4, 3, "PicoOS v0.4", COLOR_CYAN, COLOR_NAVY, 1);
+    st7735_draw_string(4, 3, "PicoOS v0.5", COLOR_CYAN, COLOR_NAVY, 1);
     for (int r = 0; r < CONSOLE_ROWS; r++) {
         redraw_row(r);
     }

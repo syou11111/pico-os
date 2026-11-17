@@ -17,6 +17,7 @@ add_executable(pico_os
     src/kernel/kernel.c
     src/kernel/context_switch.S
     src/drivers/st7735.c
+    src/drivers/hw_io.c
     src/ui/console.c
     src/fs/fs.c
     src/transfer/transfer.c
@@ -36,6 +37,8 @@ target_link_libraries(pico_os
     hardware_flash
     hardware_spi
     hardware_pwm
+    hardware_adc
+    hardware_i2c
     pico_cyw43_arch_none
 )
 

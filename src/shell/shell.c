@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "../kernel/kernel.h"
 #include "../drivers/st7735.h"
+#include "../drivers/hw_io.h"
 #include "../ui/console.h"
 #include "../fs/fs.h"
 #include "../apps/vi.h"
@@ -55,9 +56,68 @@ void shell_seed_samples(void) {
         "    return 0;\n"
         "}\n";
 
+    static const char sensor_c[] =
+        "#include <stdio.h>\n"
+        "#include <gpio.h>\n"
+        "\n"
+        "int main(void) {\n"
+        "    printf(\"=== PicoOS Sensor Demo ===\\n\");\n"
+        "    for (int i = 0; i < 5; i++) {\n"
+        "        printf(\"[%d] Temp: %d C | GP26: %d\\n\",\n"
+        "               i + 1, temp_c(), adc_read(26));\n"
+        "        sleep_ms(300);\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n";
+
+    static const char game_c[] =
+        "#include <stdio.h>\n"
+        "#include <gpio.h>\n"
+        "\n"
+        "int main(void) {\n"
+        "    int bg = rgb(8, 12, 24);\n"
+        "    int px = 64, old_px = 64;\n"
+        "    int bx = 80, by = 40, ox = 80, oy = 40;\n"
+        "    int vx = 2, vy = 2, score = 0;\n"
+        "    cls(bg);\n"
+        "    text(4, 2, \"PADDLE GAME (A/D, Q=quit)\", rgb(0, 255, 255), bg);\n"
+        "    rect(0, 12, 160, 1, rgb(0, 160, 180));\n"
+        "    printf(\"Paddle Game: A/D or Left/Right, Q to quit\\n\");\n"
+        "    while (1) {\n"
+        "        int k = key_poll();\n"
+        "        if (k == 'q' || k == 'Q' || k == KEY_ESC) break;\n"
+        "        if (k == 'a' || k == 'A' || k == KEY_LEFT) px -= 10;\n"
+        "        if (k == 'd' || k == 'D' || k == KEY_RIGHT) px += 10;\n"
+        "        if (px < 2) px = 2;\n"
+        "        if (px > 126) px = 126;\n"
+        "        bx += vx; by += vy;\n"
+        "        if (bx <= 2 || bx >= 154) vx = -vx;\n"
+        "        if (by <= 15) vy = -vy;\n"
+        "        if (by >= 112 && by <= 117 && bx + 4 >= px && bx <= px + 32 && vy > 0) {\n"
+        "            vy = -vy;\n"
+        "            score++;\n"
+        "            printf(\"Score: %d\\n\", score);\n"
+        "        }\n"
+        "        if (by > 124) {\n"
+        "            text(48, 60, \"GAME OVER!\", rgb(255, 60, 60), bg);\n"
+        "            printf(\"Game Over! Final Score: %d\\n\", score);\n"
+        "            break;\n"
+        "        }\n"
+        "        if (old_px != px) rect(old_px, 118, 32, 5, bg);\n"
+        "        rect(ox, oy, 4, 4, bg);\n"
+        "        rect(px, 118, 32, 5, rgb(0, 255, 128));\n"
+        "        rect(bx, by, 4, 4, rgb(255, 220, 0));\n"
+        "        old_px = px; ox = bx; oy = by;\n"
+        "        sleep_ms(30);\n"
+        "    }\n"
+        "    return score;\n"
+        "}\n";
+
     fs_write("hello.c", hello_c, strlen(hello_c));
     fs_write("fib.c", fib_c, strlen(fib_c));
     fs_write("gfx.c", gfx_c, strlen(gfx_c));
+    fs_write("sensor.c", sensor_c, strlen(sensor_c));
+    fs_write("game.c", game_c, strlen(game_c));
 }
 
 static const char *state_name(task_state_t s) {
@@ -115,6 +175,153 @@ static void handle_cc_command(char *args) {
     cc_compile_file(a1, out);
 }
 
+static void handle_disp_command(char *args) {
+    char *rest = NULL;
+    char *sub = split_arg(args, &rest);
+    if (!sub) {
+        const st7735_pins_t *p = st7735_get_pins();
+        printf("Display ST7735S (SPI%u):\r\n", (unsigned)p->spi_bus);
+        printf("  CS=%u SCK=%u MOSI=%u RST=%u DC=%u BLK=%u\r\n",
+               p->cs, p->sck, p->mosi, p->rst, p->dc, p->blk);
+        printf("Usage:\r\n");
+        printf("  disp set <cs> <sck> <mosi> <rst> <dc> <blk>\r\n");
+        printf("  disp reset\r\n");
+        console_printf(COLOR_WHITE, "SPI%u CS=%u SCK=%u TX=%u\n",
+                       p->spi_bus, p->cs, p->sck, p->mosi);
+        return;
+    }
+    if (strcmp(sub, "reset") == 0) {
+        int rc = st7735_reset_pins();
+        if (rc == 0) {
+            console_set_statusbar_active(true);
+            console_redraw_all();
+            printf("Display pins reset to default (17..22) and saved.\r\n");
+        } else {
+            printf("disp reset failed (%d)\r\n", rc);
+        }
+        return;
+    }
+    if (strcmp(sub, "set") == 0) {
+        int nums[6];
+        for (int i = 0; i < 6; i++) {
+            char *tok = split_arg(rest, &rest);
+            if (!tok) {
+                printf("Usage: disp set <cs> <sck> <mosi> <rst> <dc> <blk>\r\n");
+                return;
+            }
+            nums[i] = atoi(tok);
+        }
+        int rc = st7735_reconfigure_pins(
+            (uint8_t)nums[0], (uint8_t)nums[1], (uint8_t)nums[2],
+            (uint8_t)nums[3], (uint8_t)nums[4], (uint8_t)nums[5], true);
+        if (rc == 0) {
+            console_set_statusbar_active(true);
+            console_redraw_all();
+            const st7735_pins_t *p = st7735_get_pins();
+            printf("Display updated (SPI%u: CS=%u SCK=%u MOSI=%u RST=%u DC=%u BLK=%u) & saved.\r\n",
+                   p->spi_bus, p->cs, p->sck, p->mosi, p->rst, p->dc, p->blk);
+        } else {
+            printf("disp set failed (%d): check valid SPI0/SPI1 pins & no duplicates.\r\n", rc);
+        }
+        return;
+    }
+    printf("Unknown disp subcommand: %s\r\n", sub);
+}
+
+static void handle_pinout_command(void) {
+    const st7735_pins_t *p = st7735_get_pins();
+    printf("Display (SPI%u): CS=GP%u SCK=GP%u MOSI=GP%u RST=GP%u DC=GP%u BLK=GP%u\r\n",
+           p->spi_bus, p->cs, p->sck, p->mosi, p->rst, p->dc, p->blk);
+    printf("Free User GPIOs: ");
+    int col = 0;
+    for (int gp = 0; gp <= 28; gp++) {
+        if (hw_is_pin_safe(gp)) {
+            printf("GP%-2d ", gp);
+            if (++col % 8 == 0) printf("\r\n                 ");
+        }
+    }
+    printf("\r\nADC Pins: GP26(ADC0), GP27(ADC1), GP28(ADC2), Temp(ADC4)\r\n");
+    console_printf(COLOR_GREEN, "Disp SPI%u | %d free GPIOs\n", p->spi_bus, col);
+}
+
+static void handle_gpio_command(char *args) {
+    char *rest = NULL;
+    char *sub = split_arg(args, &rest);
+    if (!sub) {
+        printf("Usage: gpio mode <pin> <in|out|up|down> | gpio write <pin> <0|1> | gpio read <pin> | gpio adc <pin|temp>\r\n");
+        return;
+    }
+    if (strcmp(sub, "mode") == 0) {
+        char *ps = split_arg(rest, &rest);
+        char *ms = split_arg(rest, &rest);
+        if (!ps || !ms) { printf("Usage: gpio mode <pin> <in|out|up|down>\r\n"); return; }
+        int pin = atoi(ps);
+        int m = HW_INPUT;
+        if (strcmp(ms, "out") == 0) m = HW_OUTPUT;
+        else if (strcmp(ms, "up") == 0) m = HW_INPUT_PULLUP;
+        else if (strcmp(ms, "down") == 0) m = HW_INPUT_PULLDOWN;
+        int rc = hw_pin_mode(pin, m);
+        printf(rc == 0 ? "GP%d mode=%s\r\n" : "Invalid/protected pin GP%d\r\n", pin, ms);
+    } else if (strcmp(sub, "write") == 0) {
+        char *ps = split_arg(rest, &rest);
+        char *vs = split_arg(rest, &rest);
+        if (!ps || !vs) { printf("Usage: gpio write <pin> <0|1>\r\n"); return; }
+        int pin = atoi(ps), v = atoi(vs);
+        int rc = hw_digital_write(pin, v);
+        printf(rc == 0 ? "GP%d <- %d\r\n" : "Invalid/protected pin GP%d\r\n", pin, v ? 1 : 0);
+    } else if (strcmp(sub, "read") == 0) {
+        char *ps = split_arg(rest, &rest);
+        if (!ps) { printf("Usage: gpio read <pin>\r\n"); return; }
+        int pin = atoi(ps);
+        int v = hw_digital_read(pin);
+        if (v < 0) printf("Invalid/protected pin GP%d\r\n", pin);
+        else printf("GP%d = %d\r\n", pin, v);
+    } else if (strcmp(sub, "adc") == 0) {
+        char *ps = split_arg(rest, &rest);
+        if (!ps) { printf("Usage: gpio adc <pin|temp>\r\n"); return; }
+        if (strcmp(ps, "temp") == 0) {
+            printf("Internal Temp: %d C (raw=%d)\r\n", hw_read_temp_c(), hw_adc_read(4));
+        } else {
+            int pin = atoi(ps);
+            int v = hw_adc_read(pin);
+            if (v < 0) printf("Invalid/protected ADC pin %d\r\n", pin);
+            else printf("ADC(%d) = %d\r\n", pin, v);
+        }
+    } else {
+        printf("Unknown gpio subcommand: %s\r\n", sub);
+    }
+}
+
+static void handle_i2c_command(char *args) {
+    char *rest = NULL;
+    char *sub = split_arg(args, &rest);
+    if (!sub || strcmp(sub, "scan") != 0) {
+        printf("Usage: i2c scan [bus] [sda] [scl]\r\n");
+        return;
+    }
+    int bus = 0, sda = 4, scl = 5;
+    char *b_s = split_arg(rest, &rest);
+    char *d_s = split_arg(rest, &rest);
+    char *c_s = split_arg(rest, &rest);
+    if (b_s) bus = atoi(b_s);
+    if (d_s) sda = atoi(d_s);
+    if (c_s) scl = atoi(c_s);
+    else if (bus == 1 && !d_s) { sda = 6; scl = 7; }
+
+    int rc = hw_i2c_init(bus, sda, scl, 100000);
+    if (rc < 0) {
+        printf("i2c init failed (%d): check I2C%d pins (SDA=GP%d SCL=GP%d)\r\n", rc, bus, sda, scl);
+        return;
+    }
+    uint8_t found[16];
+    int n = hw_i2c_scan(bus, found, 16);
+    printf("I2C%d (SDA=GP%d, SCL=GP%d): found %d device(s)\r\n", bus, sda, scl, n);
+    for (int i = 0; i < n && i < 16; i++) {
+        printf("  0x%02X\r\n", found[i]);
+    }
+    console_printf(COLOR_WHITE, "I2C%d scan: %d dev\n", bus, n);
+}
+
 static void exec_command(char *line) {
     line = skip_spaces(line);
     if (*line == '\0') return;
@@ -144,7 +351,11 @@ static void exec_command(char *line) {
         printf("  disasm [bin]         Disassemble PXE1 binary\r\n");
         printf("  rx <file>            Receive file from PC (framed/paste)\r\n");
         printf("  tx <file>            Send file to PC (Hex + CRC16)\r\n");
-        printf("  samples              Create hello.c, fib.c, gfx.c\r\n");
+        printf("  pinout               Show display & free user GPIO pins\r\n");
+        printf("  disp [set ...|reset] View/remap ST7735S display pins\r\n");
+        printf("  gpio <mode|write|read|adc>  Test GPIO/ADC pins\r\n");
+        printf("  i2c scan [bus sda scl]      Scan I2C bus devices\r\n");
+        printf("  samples              Create hello/fib/gfx/sensor/game.c\r\n");
         printf("  bootsel              Reboot into USB BOOTSEL mode\r\n");
         console_puts("help: see serial\n", COLOR_YELLOW);
     } else if (strcmp(line, "ps") == 0) {
@@ -302,10 +513,21 @@ static void exec_command(char *line) {
     } else if (strcmp(line, "tx") == 0 || strncmp(line, "tx ", 3) == 0) {
         char *name = (strlen(line) > 3) ? skip_spaces(line + 3) : "";
         transfer_tx_file(name);
+    } else if (strcmp(line, "pinout") == 0) {
+        handle_pinout_command();
+    } else if (strcmp(line, "disp") == 0 || strncmp(line, "disp ", 5) == 0) {
+        char *args = (strlen(line) > 5) ? line + 5 : "";
+        handle_disp_command(args);
+    } else if (strcmp(line, "gpio") == 0 || strncmp(line, "gpio ", 5) == 0) {
+        char *args = (strlen(line) > 5) ? line + 5 : "";
+        handle_gpio_command(args);
+    } else if (strcmp(line, "i2c") == 0 || strncmp(line, "i2c ", 4) == 0) {
+        char *args = (strlen(line) > 4) ? line + 4 : "";
+        handle_i2c_command(args);
     } else if (strcmp(line, "samples") == 0) {
         shell_seed_samples();
-        printf("Created sample files: hello.c, fib.c, gfx.c\r\n");
-        console_puts("Seeded hello/fib/gfx.c\n", COLOR_GREEN);
+        printf("Created sample files: hello.c, fib.c, gfx.c, sensor.c, game.c\r\n");
+        console_puts("Seeded 5 samples\n", COLOR_GREEN);
     } else if (strcmp(line, "bootsel") == 0) {
         printf("Rebooting into BOOTSEL...\r\n");
         console_puts("Rebooting BOOTSEL...\n", COLOR_ORANGE);
@@ -326,7 +548,7 @@ void shell_task(void *arg) {
     while (1) {
         if (!banner_shown && stdio_usb_connected()) {
             banner_shown = true;
-            printf("\r\n=== PicoOS v0.4 (RP2040 + PicoFS + vi + cc + rx/tx) ===\r\n");
+            printf("\r\n=== PicoOS v0.5 (RP2040 + PicoFS + vi + cc + HW/Game) ===\r\n");
             printf("Type 'help' for commands.\r\n");
             printf("pico-os> ");
         }

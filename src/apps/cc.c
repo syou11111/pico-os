@@ -1,6 +1,7 @@
 #include "cc.h"
 #include "../kernel/kernel.h"
 #include "../drivers/st7735.h"
+#include "../drivers/hw_io.h"
 #include "../ui/console.h"
 #include "../fs/fs.h"
 #include "pico/stdlib.h"
@@ -19,7 +20,7 @@ extern void set_onboard_led(bool on);
 #define CC_MAX_CODE     768
 #define CC_MAX_DATA     1024
 #define CC_MAX_SYMS     64
-#define CC_MAX_MACROS   32
+#define CC_MAX_MACROS   64
 #define CC_MAX_PATCHES  64
 #define CC_MAX_LOOPS    8
 #define CC_MAX_LOOP_JMP 16
@@ -91,7 +92,26 @@ enum {
     SYS_RECT,
     SYS_TEXT,
     SYS_RGB,
-    SYS_RAND
+    SYS_RAND,
+    SYS_PIXEL,
+    SYS_KEY_POLL,
+    SYS_PIN_MODE,
+    SYS_DIGITAL_WRITE,
+    SYS_DIGITAL_READ,
+    SYS_GPIO_TOGGLE,
+    SYS_PWM_WRITE,
+    SYS_TONE,
+    SYS_NO_TONE,
+    SYS_ADC_READ,
+    SYS_TEMP_C,
+    SYS_I2C_INIT,
+    SYS_I2C_WRITE,
+    SYS_I2C_READ,
+    SYS_I2C_WRITE_REG,
+    SYS_I2C_READ_REG,
+    SYS_SPI_OPEN,
+    SYS_SPI_TRANSFER,
+    SYS_SPI_BYTE
 };
 
 static inline uint32_t enc_instr(uint8_t op, int32_t imm) {
@@ -308,6 +328,43 @@ static uint16_t add_string_literal(const char *s, size_t len) {
     return off;
 }
 
+static void add_macro(const char *name, int32_t val) {
+    for (int i = 0; i < macro_count; i++) {
+        if (strcmp(macros[i].name, name) == 0) {
+            macros[i].val = val;
+            return;
+        }
+    }
+    if (macro_count < CC_MAX_MACROS) {
+        strncpy(macros[macro_count].name, name, 23);
+        macros[macro_count].name[23] = '\0';
+        macros[macro_count].val = val;
+        macro_count++;
+    }
+}
+
+static void inject_builtin_header_macros(const char *hdr) {
+    if (strcmp(hdr, "gpio.h") == 0 || strcmp(hdr, "pwm.h") == 0 ||
+        strcmp(hdr, "adc.h") == 0 || strcmp(hdr, "i2c.h") == 0 ||
+        strcmp(hdr, "spi.h") == 0 || strcmp(hdr, "picoos.h") == 0) {
+        add_macro("INPUT", HW_INPUT);
+        add_macro("OUTPUT", HW_OUTPUT);
+        add_macro("INPUT_PULLUP", HW_INPUT_PULLUP);
+        add_macro("INPUT_PULLDOWN", HW_INPUT_PULLDOWN);
+        add_macro("LOW", 0);
+        add_macro("HIGH", 1);
+        add_macro("I2C0", 0);
+        add_macro("I2C1", 1);
+        add_macro("SPI0", 0);
+        add_macro("SPI1", 1);
+        add_macro("KEY_UP", 1000);
+        add_macro("KEY_DOWN", 1001);
+        add_macro("KEY_RIGHT", 1002);
+        add_macro("KEY_LEFT", 1003);
+        add_macro("KEY_ESC", 27);
+    }
+}
+
 /* ---------- Lexer ---------- */
 static void skip_ws_and_comments(void) {
     while (*lex_p) {
@@ -330,7 +387,22 @@ static void skip_ws_and_comments(void) {
             /* Preprocessor directive */
             lex_p++;
             while (*lex_p == ' ' || *lex_p == '\t') lex_p++;
-            if (strncmp(lex_p, "define", 6) == 0 && (lex_p[6] == ' ' || lex_p[6] == '\t')) {
+            if (strncmp(lex_p, "include", 7) == 0 &&
+                (lex_p[7] == ' ' || lex_p[7] == '\t' || lex_p[7] == '<' || lex_p[7] == '"')) {
+                lex_p += 7;
+                while (*lex_p == ' ' || *lex_p == '\t') lex_p++;
+                if (*lex_p == '<' || *lex_p == '"') {
+                    char endc = (*lex_p == '<') ? '>' : '"';
+                    lex_p++;
+                    char hname[32];
+                    int hi = 0;
+                    while (*lex_p && *lex_p != endc && *lex_p != '\n' && hi < 31) {
+                        hname[hi++] = *lex_p++;
+                    }
+                    hname[hi] = '\0';
+                    inject_builtin_header_macros(hname);
+                }
+            } else if (strncmp(lex_p, "define", 6) == 0 && (lex_p[6] == ' ' || lex_p[6] == '\t')) {
                 lex_p += 6;
                 while (*lex_p == ' ' || *lex_p == '\t') lex_p++;
                 char mname[24];
@@ -349,11 +421,8 @@ static void skip_ws_and_comments(void) {
                     mval = (int32_t)strtol(lex_p, &endp, 0) * sign;
                     lex_p = endp;
                 }
-                if (mname[0] != '\0' && macro_count < CC_MAX_MACROS) {
-                    strncpy(macros[macro_count].name, mname, 23);
-                    macros[macro_count].name[23] = '\0';
-                    macros[macro_count].val = mval;
-                    macro_count++;
+                if (mname[0] != '\0') {
+                    add_macro(mname, mval);
                 }
             }
             while (*lex_p && *lex_p != '\n') lex_p++;
@@ -572,14 +641,33 @@ static int lookup_syscall(const char *name) {
     if (strcmp(name, "putchar") == 0)   return SYS_PUTCHAR;
     if (strcmp(name, "getchar") == 0)   return SYS_GETCHAR;
     if (strcmp(name, "sleep_ms") == 0 || strcmp(name, "delay") == 0) return SYS_SLEEP_MS;
-    if (strcmp(name, "ticks") == 0)     return SYS_TICKS;
-    if (strcmp(name, "led") == 0)       return SYS_LED;
-    if (strcmp(name, "backlight") == 0) return SYS_BACKLIGHT;
-    if (strcmp(name, "cls") == 0)       return SYS_CLS;
-    if (strcmp(name, "rect") == 0)      return SYS_RECT;
-    if (strcmp(name, "text") == 0)      return SYS_TEXT;
-    if (strcmp(name, "rgb") == 0)       return SYS_RGB;
-    if (strcmp(name, "rand") == 0)      return SYS_RAND;
+    if (strcmp(name, "ticks") == 0)         return SYS_TICKS;
+    if (strcmp(name, "led") == 0)           return SYS_LED;
+    if (strcmp(name, "backlight") == 0)     return SYS_BACKLIGHT;
+    if (strcmp(name, "cls") == 0)           return SYS_CLS;
+    if (strcmp(name, "rect") == 0)          return SYS_RECT;
+    if (strcmp(name, "text") == 0)          return SYS_TEXT;
+    if (strcmp(name, "rgb") == 0)           return SYS_RGB;
+    if (strcmp(name, "rand") == 0)          return SYS_RAND;
+    if (strcmp(name, "pixel") == 0)         return SYS_PIXEL;
+    if (strcmp(name, "key_poll") == 0)      return SYS_KEY_POLL;
+    if (strcmp(name, "pin_mode") == 0)      return SYS_PIN_MODE;
+    if (strcmp(name, "digital_write") == 0) return SYS_DIGITAL_WRITE;
+    if (strcmp(name, "digital_read") == 0)  return SYS_DIGITAL_READ;
+    if (strcmp(name, "gpio_toggle") == 0)   return SYS_GPIO_TOGGLE;
+    if (strcmp(name, "pwm_write") == 0)     return SYS_PWM_WRITE;
+    if (strcmp(name, "tone") == 0)          return SYS_TONE;
+    if (strcmp(name, "no_tone") == 0)       return SYS_NO_TONE;
+    if (strcmp(name, "adc_read") == 0)      return SYS_ADC_READ;
+    if (strcmp(name, "temp_c") == 0)        return SYS_TEMP_C;
+    if (strcmp(name, "i2c_init") == 0)      return SYS_I2C_INIT;
+    if (strcmp(name, "i2c_write") == 0)     return SYS_I2C_WRITE;
+    if (strcmp(name, "i2c_read") == 0)      return SYS_I2C_READ;
+    if (strcmp(name, "i2c_write_reg") == 0) return SYS_I2C_WRITE_REG;
+    if (strcmp(name, "i2c_read_reg") == 0)  return SYS_I2C_READ_REG;
+    if (strcmp(name, "spi_open") == 0)      return SYS_SPI_OPEN;
+    if (strcmp(name, "spi_transfer") == 0)  return SYS_SPI_TRANSFER;
+    if (strcmp(name, "spi_byte") == 0)      return SYS_SPI_BYTE;
     return -1;
 }
 
@@ -1364,13 +1452,67 @@ static void parse_top_level(void) {
 static volatile bool vm_aborted = false;
 static uint32_t vm_rng_state = 0x12345678UL;
 
-static bool vm_check_abort(void) {
-    int ch = getchar_timeout_us(0);
-    if (ch == 0x03) { /* Ctrl+C */
-        vm_aborted = true;
-        return true;
+#define VM_KEYQ_SIZE 16
+static uint8_t vm_keyq[VM_KEYQ_SIZE];
+static uint8_t vm_keyq_head = 0;
+static uint8_t vm_keyq_tail = 0;
+
+static void vm_keyq_push(uint8_t c) {
+    uint8_t next = (uint8_t)((vm_keyq_head + 1U) % VM_KEYQ_SIZE);
+    if (next != vm_keyq_tail) {
+        vm_keyq[vm_keyq_head] = c;
+        vm_keyq_head = next;
     }
-    return false;
+}
+
+static int vm_keyq_pop(void) {
+    if (vm_keyq_head == vm_keyq_tail) return -1;
+    uint8_t c = vm_keyq[vm_keyq_tail];
+    vm_keyq_tail = (uint8_t)((vm_keyq_tail + 1U) % VM_KEYQ_SIZE);
+    return (int)c;
+}
+
+static bool vm_check_abort(void) {
+    while (true) {
+        int ch = getchar_timeout_us(0);
+        if (ch == PICO_ERROR_TIMEOUT) break;
+        if (ch == 0x03) { /* Ctrl+C */
+            vm_aborted = true;
+            return true;
+        }
+        vm_keyq_push((uint8_t)ch);
+    }
+    return vm_aborted;
+}
+
+static int vm_read_raw_nonblock(void) {
+    vm_check_abort();
+    return vm_keyq_pop();
+}
+
+static int vm_key_poll(void) {
+    int ch = vm_read_raw_nonblock();
+    if (ch < 0) return 0;
+    if (ch == 27) {
+        int c1 = vm_read_raw_nonblock();
+        if (c1 < 0) {
+            os_sleep_ms(10);
+            c1 = vm_read_raw_nonblock();
+        }
+        if (c1 == '[') {
+            int c2 = vm_read_raw_nonblock();
+            if (c2 < 0) {
+                os_sleep_ms(10);
+                c2 = vm_read_raw_nonblock();
+            }
+            if (c2 == 'A') return 1000; /* KEY_UP */
+            if (c2 == 'B') return 1001; /* KEY_DOWN */
+            if (c2 == 'C') return 1002; /* KEY_RIGHT */
+            if (c2 == 'D') return 1003; /* KEY_LEFT */
+        }
+        return 27; /* KEY_ESC */
+    }
+    return ch;
 }
 
 static void vm_printf_exec(int argc, const int32_t *args, uint16_t data_limit) {
@@ -1473,12 +1615,9 @@ static int32_t vm_syscall(int sys_id, int argc, const int32_t *args, uint16_t da
             return argc >= 1 ? args[0] : 0;
         case SYS_GETCHAR: {
             while (!vm_aborted) {
-                int ch = getchar_timeout_us(20000);
-                if (ch == 0x03) {
-                    vm_aborted = true;
-                    return -1;
-                }
-                if (ch != PICO_ERROR_TIMEOUT) return ch;
+                int ch = vm_read_raw_nonblock();
+                if (vm_aborted) return -1;
+                if (ch >= 0) return ch;
                 os_sleep_ms(5);
             }
             return -1;
@@ -1540,6 +1679,78 @@ static int32_t vm_syscall(int sys_id, int argc, const int32_t *args, uint16_t da
             vm_rng_state ^= vm_rng_state << 5;
             if (vm_rng_state == 0) vm_rng_state = os_get_ticks() | 1U;
             return (int32_t)(vm_rng_state & 0x7FFFFFFFUL);
+        case SYS_PIXEL:
+            if (argc >= 3) {
+                console_set_statusbar_active(false);
+                st7735_draw_pixel((uint16_t)args[0], (uint16_t)args[1], (uint16_t)args[2]);
+            }
+            return 0;
+        case SYS_KEY_POLL:
+            return vm_key_poll();
+        case SYS_PIN_MODE:
+            return (argc >= 2) ? hw_pin_mode(args[0], args[1]) : -1;
+        case SYS_DIGITAL_WRITE:
+            return (argc >= 2) ? hw_digital_write(args[0], args[1]) : -1;
+        case SYS_DIGITAL_READ:
+            return (argc >= 1) ? hw_digital_read(args[0]) : -1;
+        case SYS_GPIO_TOGGLE:
+            return (argc >= 1) ? hw_gpio_toggle(args[0]) : -1;
+        case SYS_PWM_WRITE:
+            return (argc >= 2) ? hw_pwm_write(args[0], args[1]) : -1;
+        case SYS_TONE:
+            return (argc >= 3) ? hw_tone(args[0], args[1], args[2]) :
+                   ((argc == 2) ? hw_tone(args[0], args[1], 0) : -1);
+        case SYS_NO_TONE:
+            return (argc >= 1) ? hw_no_tone(args[0]) : -1;
+        case SYS_ADC_READ:
+            return (argc >= 1) ? hw_adc_read(args[0]) : -1;
+        case SYS_TEMP_C:
+            return hw_read_temp_c();
+        case SYS_I2C_INIT:
+            if (argc >= 4) return hw_i2c_init(args[0], args[1], args[2], args[3]);
+            if (argc == 3) return hw_i2c_init(args[0], args[1], args[2], 100000);
+            return -1;
+        case SYS_I2C_WRITE: {
+            if (argc < 4) return -1;
+            uint32_t p = (uint32_t)args[2];
+            uint32_t l = (uint32_t)args[3];
+            if (p == 0 || p + l > VM_MEM_SIZE) return -1;
+            return hw_i2c_write(args[0], (uint8_t)args[1], &vm_mem[p], l);
+        }
+        case SYS_I2C_READ: {
+            if (argc < 4) return -1;
+            uint32_t p = (uint32_t)args[2];
+            uint32_t l = (uint32_t)args[3];
+            if (p == 0 || p + l > VM_MEM_SIZE) return -1;
+            return hw_i2c_read(args[0], (uint8_t)args[1], &vm_mem[p], l);
+        }
+        case SYS_I2C_WRITE_REG:
+            return (argc >= 4) ? hw_i2c_write_reg(args[0], (uint8_t)args[1], (uint8_t)args[2], (uint8_t)args[3]) : -1;
+        case SYS_I2C_READ_REG:
+            return (argc >= 3) ? hw_i2c_read_reg(args[0], (uint8_t)args[1], (uint8_t)args[2]) : -1;
+        case SYS_SPI_OPEN:
+            if (argc >= 5) return hw_spi_open(args[0], args[1], args[2], args[3], args[4]);
+            if (argc == 4) return hw_spi_open(args[0], args[1], args[2], args[3], 1000000);
+            return -1;
+        case SYS_SPI_TRANSFER: {
+            if (argc < 4) return -1;
+            uint32_t tp = (uint32_t)args[1];
+            uint32_t rp = (uint32_t)args[2];
+            uint32_t l  = (uint32_t)args[3];
+            const uint8_t *tx = NULL;
+            uint8_t *rx = NULL;
+            if (tp != 0) {
+                if (tp + l > VM_MEM_SIZE) return -1;
+                tx = &vm_mem[tp];
+            }
+            if (rp != 0) {
+                if (rp + l > VM_MEM_SIZE) return -1;
+                rx = &vm_mem[rp];
+            }
+            return hw_spi_transfer(args[0], tx, rx, l);
+        }
+        case SYS_SPI_BYTE:
+            return (argc >= 2) ? hw_spi_byte(args[0], (uint8_t)args[1]) : -1;
         default:
             return 0;
     }
@@ -1566,7 +1777,8 @@ int cc_compile_file(const char *src_name, const char *out_name) {
     lex_p = src_buf;
     lex_line = 1;
     code_len = 0;
-    data_len = 0;
+    data_len = 4; /* Reserve offset 0..3 as NULL */
+    memset(data_buf, 0, 4);
     global_bytes = 0;
     local_bytes = 0;
     max_local_bytes = 0;
@@ -1685,6 +1897,8 @@ int cc_run_file(const char *bin_name) {
     int csp = 0;
     uint32_t steps = 0;
     vm_aborted = false;
+    vm_keyq_head = 0;
+    vm_keyq_tail = 0;
     vm_rng_state = os_get_ticks() | 1U;
 
     int32_t exit_code = 0;
