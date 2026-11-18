@@ -4,6 +4,7 @@
 #include "../drivers/hw_io.h"
 #include "../ui/console.h"
 #include "../fs/fs.h"
+#include "../net/wifi_ap.h"
 #include "pico/stdlib.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1474,7 +1475,7 @@ static int vm_keyq_pop(void) {
 
 static bool vm_check_abort(void) {
     while (true) {
-        int ch = getchar_timeout_us(0);
+        int ch = os_getchar_timeout_us(0);
         if (ch == PICO_ERROR_TIMEOUT) break;
         if (ch == 0x03) { /* Ctrl+C */
             vm_aborted = true;

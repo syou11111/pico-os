@@ -57,7 +57,7 @@ void console_init(void) {
     st7735_fill_screen(BG_COLOR);
     st7735_fill_rect(0, 0, ST7735_WIDTH, STATUS_BAR_H, COLOR_NAVY);
     st7735_draw_hline(0, STATUS_BAR_H, ST7735_WIDTH, COLOR_TEAL);
-    st7735_draw_string(4, 3, "PicoOS v0.5", COLOR_CYAN, COLOR_NAVY, 1);
+    st7735_draw_string(4, 3, "PicoOS v0.6", COLOR_CYAN, COLOR_NAVY, 1);
     console_clear();
 }
 
@@ -65,7 +65,7 @@ void console_redraw_all(void) {
     st7735_fill_screen(BG_COLOR);
     st7735_fill_rect(0, 0, ST7735_WIDTH, STATUS_BAR_H, COLOR_NAVY);
     st7735_draw_hline(0, STATUS_BAR_H, ST7735_WIDTH, COLOR_TEAL);
-    st7735_draw_string(4, 3, "PicoOS v0.5", COLOR_CYAN, COLOR_NAVY, 1);
+    st7735_draw_string(4, 3, "PicoOS v0.6", COLOR_CYAN, COLOR_NAVY, 1);
     for (int r = 0; r < CONSOLE_ROWS; r++) {
         redraw_row(r);
     }
@@ -121,6 +121,19 @@ void console_printf(uint16_t color, const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     console_puts(buf, color);
+}
+
+void console_preview_input(const char *prompt, const char *buf) {
+    if (!statusbar_active) return;
+    size_t plen = prompt ? strlen(prompt) : 0;
+    size_t blen = buf ? strlen(buf) : 0;
+    size_t max_body = (plen < CONSOLE_COLS) ? (CONSOLE_COLS - plen) : 0;
+    const char *tail = (blen > max_body) ? (buf + blen - max_body) : (buf ? buf : "");
+
+    snprintf(lines[cur_row], CONSOLE_COLS + 1, "%s%s", prompt ? prompt : "", tail);
+    line_colors[cur_row] = COLOR_YELLOW;
+    cur_col = 0;
+    redraw_row(cur_row);
 }
 
 void console_update_statusbar(uint32_t ticks, uint32_t task_count, bool heartbeat) {

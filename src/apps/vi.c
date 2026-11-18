@@ -3,6 +3,7 @@
 #include "../drivers/st7735.h"
 #include "../ui/console.h"
 #include "../fs/fs.h"
+#include "../net/wifi_ap.h"
 #include "pico/stdlib.h"
 #include <stdio.h>
 #include <string.h>
@@ -271,17 +272,17 @@ static void render_all(void) {
 }
 
 static int read_key(void) {
-    int ch = getchar_timeout_us(20000);
+    int ch = os_getchar_timeout_us(20000);
     if (ch == PICO_ERROR_TIMEOUT) {
         return -1;
     }
     if (ch == KEY_ESC) {
-        int c1 = getchar_timeout_us(25000);
+        int c1 = os_getchar_timeout_us(25000);
         if (c1 == PICO_ERROR_TIMEOUT) {
             return KEY_ESC;
         }
         if (c1 == '[') {
-            int c2 = getchar_timeout_us(25000);
+            int c2 = os_getchar_timeout_us(25000);
             if (c2 == PICO_ERROR_TIMEOUT) return KEY_ESC;
             switch (c2) {
                 case 'A': return KEY_UP;
@@ -293,7 +294,7 @@ static int read_key(void) {
                 case '1':
                 case '3':
                 case '4': {
-                    int c3 = getchar_timeout_us(25000);
+                    int c3 = os_getchar_timeout_us(25000);
                     (void)c3;
                     if (c2 == '1') return KEY_HOME;
                     if (c2 == '3') return KEY_DEL;

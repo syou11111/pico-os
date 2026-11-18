@@ -18,6 +18,7 @@ add_executable(pico_os
     src/kernel/context_switch.S
     src/drivers/st7735.c
     src/drivers/hw_io.c
+    src/net/wifi_ap.c
     src/ui/console.c
     src/fs/fs.c
     src/transfer/transfer.c
@@ -39,7 +40,7 @@ target_link_libraries(pico_os
     hardware_pwm
     hardware_adc
     hardware_i2c
-    pico_cyw43_arch_none
+    pico_cyw43_arch_lwip_poll
 )
 
 # Enable USB serial (stdio) for the interactive OS shell, disable UART stdio
