@@ -1,4 +1,5 @@
 build/
 downloaded_*
 *.tmp
+*.apk
 .DS_Store
