@@ -40,6 +40,9 @@ class MainActivity : ComponentActivity() {
   private var connectivityManager: ConnectivityManager? = null
   private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
+  @Volatile
+  private var wifiNetwork: Network? = null
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     bindToWifiNetwork()
@@ -50,7 +53,7 @@ class MainActivity : ComponentActivity() {
           modifier = Modifier.fillMaxSize(),
           color = Color(0xFF0D1117)
         ) {
-          PicoControllerScreen()
+          PicoControllerScreen(wifiNetworkProvider = { wifiNetwork })
         }
       }
     }
@@ -61,22 +64,44 @@ class MainActivity : ComponentActivity() {
     connectivityManager = cm
     val req = NetworkRequest.Builder()
       .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+      .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
       .build()
     val cb = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) {
-        cm.bindProcessToNetwork(network)
+        wifiNetwork = network
+        try {
+          cm.bindProcessToNetwork(network)
+        } catch (_: Throwable) {}
       }
+
       override fun onLost(network: Network) {
-        cm.bindProcessToNetwork(null)
+        if (wifiNetwork == network) {
+          wifiNetwork = null
+          try {
+            cm.bindProcessToNetwork(null)
+          } catch (_: Throwable) {}
+        }
       }
     }
     wifiCallback = cb
-    cm.requestNetwork(req, cb)
+    try {
+      cm.requestNetwork(req, cb)
+    } catch (_: Throwable) {
+      try {
+        cm.registerNetworkCallback(req, cb)
+      } catch (_: Throwable) {}
+    }
   }
 
   override fun onDestroy() {
-    wifiCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
-    connectivityManager?.bindProcessToNetwork(null)
+    wifiCallback?.let {
+      try {
+        connectivityManager?.unregisterNetworkCallback(it)
+      } catch (_: Throwable) {}
+    }
+    try {
+      connectivityManager?.bindProcessToNetwork(null)
+    } catch (_: Throwable) {}
     super.onDestroy()
   }
 }
@@ -84,7 +109,7 @@ class MainActivity : ComponentActivity() {
 private val ANSI_REGEX = Regex("\u001B\\[[0-9;?]*[A-Za-z]")
 
 @Composable
-fun PicoControllerScreen() {
+fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
   var baseUrl by remember { mutableStateOf("http://192.168.4.1") }
   var isConnected by remember { mutableStateOf(false) }
   var terminalText by remember { mutableStateOf("PicoOS-AP (pass: picoos123) にWi-Fi接続してください...\n") }
@@ -125,7 +150,8 @@ fun PicoControllerScreen() {
         }
         try {
           val url = URL("${baseUrl.trimEnd('/')}/k?s=$seq&d=$d")
-          val conn = (url.openConnection() as HttpURLConnection).apply {
+          val net = wifiNetworkProvider()
+          val conn = ((net?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
             connectTimeout = 1500
             readTimeout = 1500
             requestMethod = "GET"

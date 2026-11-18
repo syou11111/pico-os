@@ -4,6 +4,7 @@
 import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -300,6 +301,15 @@ class PicoWifiApp:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    PicoWifiApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = PicoWifiApp(root)
+        if "--self-test" in sys.argv:
+            root.after(400, app._on_close)
+        root.mainloop()
+    except Exception as exc:
+        try:
+            messagebox.showerror("PicoOS Wi-Fi Controller Error", str(exc))
+        except Exception:
+            pass
+        sys.exit(1)
