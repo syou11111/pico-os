@@ -227,10 +227,12 @@ static void start_dhcp_server(void) {
 }
 
 /* ---------- HTTP Server (Port 80) ---------- */
-static const char INDEX_HTML[] =
-"HTTP/1.1 200 OK\r\n"
-"Content-Type: text/html; charset=utf-8\r\n"
-"Connection: close\r\n\r\n"
+static const char FAVICON_RESP[] =
+"HTTP/1.1 204 No Content\r\n"
+"Content-Length: 0\r\n"
+"Connection: close\r\n\r\n";
+
+static const char INDEX_BODY[] =
 "<!DOCTYPE html><html><head><meta charset=utf-8>"
 "<meta name=viewport content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>"
 "<title>PicoOS Wireless Keyboard</title>"
@@ -305,6 +307,8 @@ static const char INDEX_HTML[] =
 typedef struct {
     const char *send_ptr;
     size_t send_left;
+    size_t total_len;
+    size_t acked;
     bool free_buf;
     char *dyn_buf;
 } http_conn_t;
@@ -330,23 +334,24 @@ static void http_send_more(struct tcp_pcb *pcb, http_conn_t *hc) {
     while (hc->send_left > 0) {
         u16_t avail = tcp_sndbuf(pcb);
         if (avail == 0) break;
-        u16_t chunk = (hc->send_left > avail) ? avail : (u16_t)hc->send_left;
+        u16_t chunk = (hc->send_left > 1024U) ? 1024U : (u16_t)hc->send_left;
+        if (chunk > avail) chunk = avail;
         err_t err = tcp_write(pcb, hc->send_ptr, chunk, TCP_WRITE_FLAG_COPY);
         if (err != ERR_OK) break;
         hc->send_ptr += chunk;
         hc->send_left -= chunk;
     }
     tcp_output(pcb);
-    if (hc->send_left == 0) {
-        http_close_conn(pcb, hc);
-    }
 }
 
 static err_t http_sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len) {
-    (void)len;
     http_conn_t *hc = (http_conn_t *)arg;
-    if (hc) {
+    if (!hc) return ERR_OK;
+    hc->acked += len;
+    if (hc->send_left > 0) {
         http_send_more(pcb, hc);
+    } else if (hc->acked >= hc->total_len) {
+        http_close_conn(pcb, hc);
     }
     return ERR_OK;
 }
@@ -411,6 +416,17 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t 
         return ERR_OK;
     }
 
+    if (strncmp(req, "GET /favicon.ico", 16) == 0) {
+        hc->dyn_buf = NULL;
+        hc->free_buf = false;
+        hc->send_ptr = FAVICON_RESP;
+        hc->send_left = sizeof(FAVICON_RESP) - 1;
+        hc->total_len = hc->send_left;
+        hc->acked = 0;
+        http_send_more(pcb, hc);
+        return ERR_OK;
+    }
+
     if (strncmp(req, "GET /k", 6) == 0) {
         uint32_t client_seq = 0;
         process_k_query(req + 6, &client_seq);
@@ -434,34 +450,57 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t 
         os_exit_critical(primask);
         delta[dlen] = '\0';
 
-        char *resp = (char *)malloc(128 + dlen);
+        char seq_prefix[24];
+        int plen = snprintf(seq_prefix, sizeof(seq_prefix), "%lu\n", (unsigned long)cur_total);
+        size_t body_len = (size_t)plen + dlen;
+
+        char *resp = (char *)malloc(160 + body_len);
         if (!resp) {
             http_close_conn(pcb, hc);
             return ERR_OK;
         }
-        int hlen = snprintf(resp, 128,
+        int hlen = snprintf(resp, 160,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/plain; charset=utf-8\r\n"
+            "Content-Length: %u\r\n"
             "Cache-Control: no-store\r\n"
-            "Connection: close\r\n\r\n"
-            "%lu\n",
-            (unsigned long)cur_total);
+            "Connection: close\r\n\r\n",
+            (unsigned)body_len);
+        memcpy(resp + hlen, seq_prefix, (size_t)plen);
         if (dlen > 0) {
-            memcpy(resp + hlen, delta, dlen);
+            memcpy(resp + hlen + plen, delta, dlen);
         }
         hc->dyn_buf = resp;
         hc->free_buf = true;
         hc->send_ptr = resp;
-        hc->send_left = (size_t)hlen + dlen;
+        hc->send_left = (size_t)hlen + body_len;
+        hc->total_len = hc->send_left;
+        hc->acked = 0;
         http_send_more(pcb, hc);
         return ERR_OK;
     }
 
     /* Serve index HTML for GET / and any other route */
-    hc->dyn_buf = NULL;
-    hc->free_buf = false;
-    hc->send_ptr = INDEX_HTML;
-    hc->send_left = sizeof(INDEX_HTML) - 1;
+    size_t body_len = sizeof(INDEX_BODY) - 1;
+    char *resp = (char *)malloc(160 + body_len);
+    if (!resp) {
+        http_close_conn(pcb, hc);
+        return ERR_OK;
+    }
+    int hlen = snprintf(resp, 160,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %u\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n",
+        (unsigned)body_len);
+    memcpy(resp + hlen, INDEX_BODY, body_len);
+    hc->dyn_buf = resp;
+    hc->free_buf = true;
+    hc->send_ptr = resp;
+    hc->send_left = (size_t)hlen + body_len;
+    hc->total_len = hc->send_left;
+    hc->acked = 0;
     http_send_more(pcb, hc);
     return ERR_OK;
 }
