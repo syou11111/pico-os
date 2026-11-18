@@ -1,11 +1,13 @@
 package com.example.picooscontroller
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    requestLocalNetworkPermissionIfNeeded()
     bindToWifiNetwork()
     enableEdgeToEdge()
     setContent {
@@ -59,9 +62,34 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  private fun requestLocalNetworkPermissionIfNeeded() {
+    try {
+      val perm = "android.permission.ACCESS_LOCAL_NETWORK"
+      if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
+        requestPermissions(arrayOf(perm), 1001)
+      }
+    } catch (_: Throwable) {}
+  }
+
+  override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<String>,
+    grantResults: IntArray
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == 1001) {
+      bindToWifiNetwork()
+    }
+  }
+
   private fun bindToWifiNetwork() {
     val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     connectivityManager = cm
+    wifiCallback?.let {
+      try {
+        cm.unregisterNetworkCallback(it)
+      } catch (_: Throwable) {}
+    }
     val req = NetworkRequest.Builder()
       .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
       .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -173,9 +201,11 @@ fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
             }
           }
           if (!isConnected) {
+            Log.i("PicoOS", "Connected: seq=$seq")
             withContext(Dispatchers.Main) { isConnected = true }
           }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+          Log.w("PicoOS", "Poll failed: ${e.javaClass.simpleName}: ${e.message}")
           if (isConnected) {
             withContext(Dispatchers.Main) { isConnected = false }
           }
