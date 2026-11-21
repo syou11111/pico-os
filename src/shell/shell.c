@@ -8,6 +8,7 @@
 #include "../apps/cc.h"
 #include "../transfer/transfer.h"
 #include "../net/wifi_ap.h"
+#include "../net/ble_uart.h"
 #include "pico/stdlib.h"
 #include "pico/bootrom.h"
 #include <stdio.h>
@@ -356,7 +357,8 @@ static void exec_command(char *line) {
         printf("  disp [set ...|reset] View/remap ST7735S display pins\r\n");
         printf("  gpio <mode|write|read|adc>  Test GPIO/ADC pins\r\n");
         printf("  i2c scan [bus sda scl]      Scan I2C bus devices\r\n");
-        printf("  wifi                 Show Wi-Fi AP SSID, pass & URL\r\n");
+        printf("  ble                  Show BLE UART connection status\r\n");
+        printf("  wifi                 Show Wi-Fi AP & BLE status\r\n");
         printf("  samples              Create hello/fib/gfx/sensor/game.c\r\n");
         printf("  bootsel              Reboot into USB BOOTSEL mode\r\n");
         console_puts("help: see serial\n", COLOR_YELLOW);
@@ -526,8 +528,14 @@ static void exec_command(char *line) {
     } else if (strcmp(line, "i2c") == 0 || strncmp(line, "i2c ", 4) == 0) {
         char *args = (strlen(line) > 4) ? line + 4 : "";
         handle_i2c_command(args);
+    } else if (strcmp(line, "ble") == 0) {
+        ble_uart_print_status();
+        console_printf(COLOR_GREEN, "BLE: %s (%s)\n",
+                       BLE_DEVICE_NAME,
+                       ble_uart_is_connected() ? "CONN" : "ADV");
     } else if (strcmp(line, "wifi") == 0) {
         wifi_ap_print_status();
+        ble_uart_print_status();
         console_printf(COLOR_CYAN, "WiFi: %s (%s)\n", WIFI_AP_SSID, WIFI_AP_IP);
     } else if (strcmp(line, "samples") == 0) {
         shell_seed_samples();
@@ -553,7 +561,8 @@ void shell_task(void *arg) {
     while (1) {
         if (!banner_shown && stdio_usb_connected()) {
             banner_shown = true;
-            printf("\r\n=== PicoOS v0.6 (RP2040 + PicoFS + vi + cc + Wi-Fi AP) ===\r\n");
+            printf("\r\n=== PicoOS v0.7 (RP2040 + PicoFS + vi + cc + BLE + Wi-Fi) ===\r\n");
+            printf("BLE UART: Name=%s (auto-connect via app)\r\n", BLE_DEVICE_NAME);
             printf("Wi-Fi AP: SSID=%s PASS=%s URL=http://%s\r\n",
                    WIFI_AP_SSID, WIFI_AP_PASS, WIFI_AP_IP);
             printf("Type 'help' for commands.\r\n");

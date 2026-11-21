@@ -1,4 +1,5 @@
 #include "wifi_ap.h"
+#include "ble_uart.h"
 #include "../kernel/kernel.h"
 #include "pico/stdlib.h"
 #include "pico/stdio/driver.h"
@@ -87,6 +88,45 @@ void wifi_log_output(const char *s, size_t len) {
         tx_total++;
     }
     os_exit_critical(primask);
+}
+
+uint32_t wifi_tx_available(uint32_t pos) {
+    uint32_t primask = os_enter_critical();
+    uint32_t cur = tx_total;
+    os_exit_critical(primask);
+    return (uint32_t)(cur - pos);
+}
+
+uint32_t wifi_tx_recent_start(uint32_t max_back) {
+    if (max_back > TX_RING_SIZE) {
+        max_back = TX_RING_SIZE;
+    }
+    uint32_t primask = os_enter_critical();
+    uint32_t cur = tx_total;
+    os_exit_critical(primask);
+    return (cur > max_back) ? (cur - max_back) : 0U;
+}
+
+size_t wifi_tx_read_from(uint32_t *pos, uint8_t *out, size_t max_len) {
+    if (!pos || !out || max_len == 0) return 0;
+    size_t n = 0;
+    uint32_t primask = os_enter_critical();
+    uint32_t cur = tx_total;
+    uint32_t p = *pos;
+    uint32_t avail = cur - p;
+    if (avail > TX_RING_SIZE) {
+        p = cur - TX_RING_SIZE;
+        avail = TX_RING_SIZE;
+    }
+    if (avail > (uint32_t)max_len) {
+        avail = (uint32_t)max_len;
+    }
+    for (uint32_t i = 0; i < avail; i++) {
+        out[n++] = (uint8_t)tx_ring[(p + i) % TX_RING_SIZE];
+    }
+    *pos = p + avail;
+    os_exit_critical(primask);
+    return n;
 }
 
 static void wifi_stdio_out_chars(const char *buf, int len) {
@@ -573,6 +613,7 @@ void wifi_ap_task(void *arg) {
     cyw43_arch_enable_ap_mode(WIFI_AP_SSID, WIFI_AP_PASS, CYW43_AUTH_WPA2_AES_PSK);
     start_dhcp_server();
     start_http_server();
+    ble_uart_init();
     ap_ready = true;
 
     while (1) {
@@ -582,6 +623,7 @@ void wifi_ap_task(void *arg) {
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, l);
         }
         cyw43_arch_poll();
+        ble_uart_poll();
         os_sleep_ms(5);
     }
 }

@@ -19,6 +19,7 @@ add_executable(pico_os
     src/drivers/st7735.c
     src/drivers/hw_io.c
     src/net/wifi_ap.c
+    src/net/ble_uart.c
     src/ui/console.c
     src/fs/fs.c
     src/transfer/transfer.c
@@ -31,6 +32,10 @@ target_include_directories(pico_os PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_compile_definitions(pico_os PRIVATE
+    PICO_FLASH_BANK_STORAGE_OFFSET=0x1BE000
+)
+
 target_link_libraries(pico_os
     pico_stdlib
     pico_bootrom
@@ -41,7 +46,11 @@ target_link_libraries(pico_os
     hardware_adc
     hardware_i2c
     pico_cyw43_arch_lwip_poll
+    pico_btstack_ble
+    pico_btstack_cyw43
 )
+
+pico_btstack_make_gatt_header(pico_os PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src/net/pico_ble.gatt")
 
 # Enable USB serial (stdio) for the interactive OS shell, disable UART stdio
 pico_enable_stdio_usb(pico_os 1)

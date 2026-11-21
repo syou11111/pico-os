@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""PicoOS Wi-Fi Controller - Native Windows GUI app (no browser required)."""
+"""PicoOS Controller - Native Windows GUI app (BLE auto-connect + Wi-Fi AP toggle)."""
 
+import asyncio
 import queue
 import re
 import subprocess
@@ -12,7 +13,20 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext
 import urllib.request
 
+try:
+    from bleak import BleakClient, BleakScanner
+
+    HAS_BLEAK = True
+except ImportError:
+    BleakClient = None
+    BleakScanner = None
+    HAS_BLEAK = False
+
 DEFAULT_URL = "http://192.168.4.1"
+BLE_TARGET_NAME = "PicoOS-BLE"
+NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 WLAN_PROFILE_XML = """<?xml version="1.0"?>
@@ -57,10 +71,11 @@ KEYSYM_MAP = {
 class PicoWifiApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("PicoOS Wi-Fi Controller (v0.6)")
-        self.root.geometry("820x620")
+        self.root.title("PicoOS Controller (BLE / Wi-Fi v0.7)")
+        self.root.geometry("840x630")
         self.root.configure(bg="#0d1117")
 
+        self.mode = "BLE" if HAS_BLEAK else "WIFI"
         self.base_url = DEFAULT_URL
         self.seq = 0
         self.connected = False
@@ -70,7 +85,7 @@ class PicoWifiApp:
         self.ui_queue: queue.Queue[tuple[str, str]] = queue.Queue()
 
         self._build_ui()
-        self.worker = threading.Thread(target=self._poll_loop, daemon=True)
+        self.worker = threading.Thread(target=self._io_loop, daemon=True)
         self.worker.start()
         self.root.after(50, self._drain_ui_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -80,15 +95,28 @@ class PicoWifiApp:
         top.pack(fill=tk.X)
 
         tk.Label(
-            top, text="PicoOS Wi-Fi Controller", fg="#38bdf8", bg="#161b22",
+            top, text="PicoOS Controller", fg="#38bdf8", bg="#161b22",
             font=("Segoe UI", 12, "bold")
         ).pack(side=tk.LEFT)
 
+        init_status = "BLEスキャン中..." if self.mode == "BLE" else "Wi-Fi待機中"
         self.status_lbl = tk.Label(
-            top, text="待機中", fg="#fde047", bg="#1f242c",
+            top, text=init_status, fg="#fde047", bg="#1f242c",
             padx=10, pady=3, font=("Segoe UI", 9, "bold")
         )
-        self.status_lbl.pack(side=tk.LEFT, padx=12)
+        self.status_lbl.pack(side=tk.LEFT, padx=10)
+
+        self.mode_btn = tk.Button(
+            top,
+            text=f"接続方式: {self.mode}",
+            bg="#1d4ed8" if self.mode == "BLE" else "#334155",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            command=self._toggle_mode,
+        )
+        self.mode_btn.pack(side=tk.LEFT, padx=4)
 
         tk.Button(
             top, text="PicoOS-AP にWi-Fi接続", bg="#0284c7", fg="#ffffff",
@@ -97,7 +125,7 @@ class PicoWifiApp:
 
         self.url_var = tk.StringVar(value=DEFAULT_URL)
         tk.Entry(
-            top, textvariable=self.url_var, width=22, bg="#0d1117", fg="#e6edf3",
+            top, textvariable=self.url_var, width=20, bg="#0d1117", fg="#e6edf3",
             insertbackground="#ffffff", relief=tk.SOLID, bd=1
         ).pack(side=tk.RIGHT, padx=4)
 
@@ -165,6 +193,7 @@ class PicoWifiApp:
         for label, cmd, bg in [
             ("ps", "ps\r", "#21262d"),
             ("ls", "ls\r", "#21262d"),
+            ("ble", "ble\r", "#21262d"),
             ("pinout", "pinout\r", "#21262d"),
             ("disp", "disp\r", "#21262d"),
             ("wifi", "wifi\r", "#21262d"),
@@ -196,6 +225,20 @@ class PicoWifiApp:
             dpad, text="▶", width=4, bg="#21262d", fg="#ffffff", relief=tk.FLAT,
             command=lambda: self._queue_hex("1B5B43")
         ).grid(row=1, column=2, padx=2, pady=2)
+
+    def _toggle_mode(self) -> None:
+        if self.mode == "WIFI":
+            if not HAS_BLEAK:
+                messagebox.showinfo("BLE未導入", "bleak が未インストールのため Wi-Fi モードのみ利用可能です。")
+                return
+            self.mode = "BLE"
+            self.mode_btn.configure(text="接続方式: BLE", bg="#1d4ed8")
+            self.status_lbl.configure(text="BLEスキャン中...", fg="#fde047")
+        else:
+            self.mode = "WIFI"
+            self.mode_btn.configure(text="接続方式: WIFI", bg="#334155")
+            self.status_lbl.configure(text="Wi-Fi未接続", fg="#fca5a5")
+        self.connected = False
 
     def _queue_hex(self, hx: str) -> None:
         with self.tx_lock:
@@ -248,8 +291,54 @@ class PicoWifiApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _poll_loop(self) -> None:
+    async def _ble_session(self) -> None:
+        self.ui_queue.put(("status", "BLEスキャン中 (PicoOS-BLE)..."))
+
+        def match_pico(dev, adv) -> bool:
+            if dev.name == BLE_TARGET_NAME:
+                return True
+            uuids = [u.lower() for u in (adv.service_uuids or [])]
+            return NUS_SERVICE_UUID in uuids
+
+        device = await BleakScanner.find_device_by_filter(match_pico, timeout=4.0)
+        if not device or not self.running or self.mode != "BLE":
+            return
+
+        self.ui_queue.put(("status", "BLE接続処理中..."))
+        async with BleakClient(device) as client:
+            def on_notify(_sender: int, data: bytearray) -> None:
+                text = data.decode("utf-8", errors="replace")
+                body = ANSI_RE.sub("", text).replace("\r", "")
+                if body:
+                    self.ui_queue.put(("log", body))
+
+            await client.start_notify(NUS_TX_UUID, on_notify)
+            self.connected = True
+            self.ui_queue.put(("conn", "BLE接続中 (PicoOS-BLE)"))
+            while self.running and self.mode == "BLE" and client.is_connected:
+                with self.tx_lock:
+                    d = self.tx_hex_queue
+                    self.tx_hex_queue = ""
+                if d:
+                    raw = bytes.fromhex(d)
+                    for i in range(0, len(raw), 100):
+                        await client.write_gatt_char(NUS_RX_UUID, raw[i : i + 100], response=False)
+                await asyncio.sleep(0.03)
+            self.connected = False
+            self.ui_queue.put(("conn", "BLE切断"))
+
+    def _io_loop(self) -> None:
         while self.running:
+            if self.mode == "BLE" and HAS_BLEAK:
+                try:
+                    asyncio.run(self._ble_session())
+                except Exception:
+                    if self.connected:
+                        self.connected = False
+                        self.ui_queue.put(("conn", "BLE未接続"))
+                time.sleep(0.6)
+                continue
+
             url_base = self.url_var.get().strip().rstrip("/") or DEFAULT_URL
             with self.tx_lock:
                 d = self.tx_hex_queue
@@ -269,11 +358,11 @@ class PicoWifiApp:
                         self.ui_queue.put(("log", body))
                 if not self.connected:
                     self.connected = True
-                    self.ui_queue.put(("conn", "接続中 (192.168.4.1)"))
+                    self.ui_queue.put(("conn", "Wi-Fi接続中 (192.168.4.1)"))
             except Exception:
                 if self.connected:
                     self.connected = False
-                    self.ui_queue.put(("conn", "未接続 (PicoOS-AP に繋いでください)"))
+                    self.ui_queue.put(("conn", "Wi-Fi未接続"))
             time.sleep(0.16 if not d else 0.04)
 
     def _drain_ui_queue(self) -> None:
@@ -285,7 +374,7 @@ class PicoWifiApp:
                     self.term.delete("1.0", "100.0")
                 self.term.see(tk.END)
             elif kind == "conn":
-                ok = val.startswith("接続中")
+                ok = "接続中" in val
                 self.status_lbl.configure(
                     text=val,
                     fg="#86efac" if ok else "#fca5a5"
@@ -309,7 +398,7 @@ if __name__ == "__main__":
         root.mainloop()
     except Exception as exc:
         try:
-            messagebox.showerror("PicoOS Wi-Fi Controller Error", str(exc))
+            messagebox.showerror("PicoOS Controller Error", str(exc))
         except Exception:
             pass
         sys.exit(1)

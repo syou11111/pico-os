@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -25,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -44,10 +46,11 @@ class MainActivity : ComponentActivity() {
 
   @Volatile
   private var wifiNetwork: Network? = null
+  private var permEpoch by mutableIntStateOf(0)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    requestLocalNetworkPermissionIfNeeded()
+    requestRequiredPermissionsIfNeeded()
     bindToWifiNetwork()
     enableEdgeToEdge()
     setContent {
@@ -56,17 +59,39 @@ class MainActivity : ComponentActivity() {
           modifier = Modifier.fillMaxSize(),
           color = Color(0xFF0D1117)
         ) {
-          PicoControllerScreen(wifiNetworkProvider = { wifiNetwork })
+          PicoControllerScreen(
+            wifiNetworkProvider = { wifiNetwork },
+            permEpoch = permEpoch
+          )
         }
       }
     }
   }
 
-  private fun requestLocalNetworkPermissionIfNeeded() {
+  private fun requestRequiredPermissionsIfNeeded() {
     try {
-      val perm = "android.permission.ACCESS_LOCAL_NETWORK"
-      if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
-        requestPermissions(arrayOf(perm), 1001)
+      val needed = mutableListOf<String>()
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+          needed.add(android.Manifest.permission.BLUETOOTH_SCAN)
+        }
+        if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+          needed.add(android.Manifest.permission.BLUETOOTH_CONNECT)
+        }
+      } else {
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+          needed.add(android.Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+      }
+      val localPerm = "android.permission.ACCESS_LOCAL_NETWORK"
+      try {
+        if (checkSelfPermission(localPerm) != PackageManager.PERMISSION_GRANTED) {
+          needed.add(localPerm)
+        }
+      } catch (_: Throwable) {}
+
+      if (needed.isNotEmpty()) {
+        requestPermissions(needed.toTypedArray(), 1001)
       }
     } catch (_: Throwable) {}
   }
@@ -78,6 +103,7 @@ class MainActivity : ComponentActivity() {
   ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     if (requestCode == 1001) {
+      permEpoch++
       bindToWifiNetwork()
     }
   }
@@ -136,11 +162,31 @@ class MainActivity : ComponentActivity() {
 
 private val ANSI_REGEX = Regex("\u001B\\[[0-9;?]*[A-Za-z]")
 
+private fun hexToBytes(hex: String): ByteArray {
+  val clean = hex.trim()
+  val n = clean.length / 2
+  val out = ByteArray(n)
+  for (i in 0 until n) {
+    val hi = Character.digit(clean[i * 2], 16)
+    val lo = Character.digit(clean[i * 2 + 1], 16)
+    if (hi >= 0 && lo >= 0) {
+      out[i] = ((hi shl 4) or lo).toByte()
+    }
+  }
+  return out
+}
+
 @Composable
-fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
-  var baseUrl by remember { mutableStateOf("http://192.168.4.1") }
+fun PicoControllerScreen(
+  wifiNetworkProvider: () -> Network? = { null },
+  permEpoch: Int = 0
+) {
+  val context = LocalContext.current
+  var mode by remember { mutableStateOf("BLE") }
+  val baseUrl by remember { mutableStateOf("http://192.168.4.1") }
   var isConnected by remember { mutableStateOf(false) }
-  var terminalText by remember { mutableStateOf("PicoOS-AP (pass: picoos123) にWi-Fi接続してください...\n") }
+  var statusLabel by remember { mutableStateOf("BLEスキャン中...") }
+  var terminalText by remember { mutableStateOf("BLEで PicoOS-BLE に自動接続します（Wi-Fi切り替え不要）\n") }
   var liveInput by remember { mutableStateOf("") }
   var cmdInput by remember { mutableStateOf("") }
 
@@ -149,26 +195,70 @@ fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
   var seq by remember { mutableLongStateOf(0L) }
   val scrollState = rememberScrollState()
 
+  val bleClient = remember {
+    BlePicoClient(
+      context = context.applicationContext,
+      onStatusChanged = { ok, label ->
+        isConnected = ok
+        statusLabel = label
+      },
+      onDataReceived = { chunk ->
+        val clean = chunk.replace(ANSI_REGEX, "").replace("\r", "")
+        if (clean.isNotEmpty()) {
+          val updated = terminalText + clean
+          terminalText = if (updated.length > 4000) updated.takeLast(3500) else updated
+        }
+      }
+    )
+  }
+
+  DisposableEffect(Unit) {
+    onDispose {
+      bleClient.stop()
+    }
+  }
+
   fun queueHex(hex: String) {
-    synchronized(txLock) {
-      txQueue.append(hex)
+    if (mode == "BLE") {
+      bleClient.sendBytes(hexToBytes(hex))
+    } else {
+      synchronized(txLock) {
+        txQueue.append(hex)
+      }
     }
   }
 
   fun queueText(text: String) {
     val bytes = text.toByteArray(Charsets.UTF_8)
-    val sb = StringBuilder(bytes.size * 2)
-    for (b in bytes) {
-      sb.append(String.format("%02X", b.toInt() and 0xFF))
+    if (mode == "BLE") {
+      bleClient.sendBytes(bytes)
+    } else {
+      val sb = StringBuilder(bytes.size * 2)
+      for (b in bytes) {
+        sb.append(String.format("%02X", b.toInt() and 0xFF))
+      }
+      queueHex(sb.toString())
     }
-    queueHex(sb.toString())
   }
 
   LaunchedEffect(terminalText) {
     scrollState.animateScrollTo(scrollState.maxValue)
   }
 
-  LaunchedEffect(baseUrl) {
+  LaunchedEffect(mode, permEpoch) {
+    if (mode == "BLE") {
+      isConnected = false
+      statusLabel = "BLEスキャン中..."
+      bleClient.restart()
+    } else {
+      bleClient.stop()
+      isConnected = false
+      statusLabel = "Wi-Fi未接続"
+    }
+  }
+
+  LaunchedEffect(mode, baseUrl) {
+    if (mode != "Wi-Fi") return@LaunchedEffect
     withContext(Dispatchers.IO) {
       while (isActive) {
         val d = synchronized(txLock) {
@@ -201,13 +291,17 @@ fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
             }
           }
           if (!isConnected) {
-            Log.i("PicoOS", "Connected: seq=$seq")
-            withContext(Dispatchers.Main) { isConnected = true }
+            Log.i("PicoOS", "Wi-Fi Connected: seq=$seq")
+            withContext(Dispatchers.Main) {
+              isConnected = true
+              statusLabel = "Wi-Fi接続中 (192.168.4.1)"
+            }
           }
         } catch (e: Exception) {
           Log.w("PicoOS", "Poll failed: ${e.javaClass.simpleName}: ${e.message}")
-          if (isConnected) {
-            withContext(Dispatchers.Main) { isConnected = false }
+          withContext(Dispatchers.Main) {
+            isConnected = false
+            statusLabel = "Wi-Fi未接続"
           }
         }
         delay(if (d.isEmpty()) 180L else 40L)
@@ -229,25 +323,42 @@ fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
       horizontalArrangement = Arrangement.SpaceBetween
     ) {
       Text(
-        text = "PicoOS Controller",
+        text = "PicoOS",
         color = Color(0xFF38BDF8),
         fontSize = 18.sp,
         fontWeight = FontWeight.Bold
       )
-      Box(
-        modifier = Modifier
-          .background(
-            if (isConnected) Color(0xFF14532D) else Color(0xFF451A1A),
-            RoundedCornerShape(12.dp)
-          )
-          .padding(horizontal = 10.dp, vertical = 4.dp)
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Text(
-          text = if (isConnected) "接続中 (192.168.4.1)" else "未接続",
-          color = if (isConnected) Color(0xFF86EFAC) else Color(0xFFFCA5A5),
-          fontSize = 12.sp,
-          fontWeight = FontWeight.SemiBold
-        )
+        Button(
+          onClick = { mode = if (mode == "BLE") "Wi-Fi" else "BLE" },
+          colors = ButtonDefaults.buttonColors(
+            containerColor = if (mode == "BLE") Color(0xFF1D4ED8) else Color(0xFF334155),
+            contentColor = Color.White
+          ),
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+          shape = RoundedCornerShape(10.dp),
+          modifier = Modifier.defaultMinSize(minWidth = 56.dp, minHeight = 30.dp)
+        ) {
+          Text(mode, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        Box(
+          modifier = Modifier
+            .background(
+              if (isConnected) Color(0xFF14532D) else Color(0xFF451A1A),
+              RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+        ) {
+          Text(
+            text = statusLabel,
+            color = if (isConnected) Color(0xFF86EFAC) else Color(0xFFFCA5A5),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+          )
+        }
       }
     }
 
@@ -375,6 +486,7 @@ fun PicoControllerScreen(wifiNetworkProvider: () -> Network? = { null }) {
         ) {
           CtrlBtn("ps", Color(0xFF21262D)) { queueText("ps\r") }
           CtrlBtn("ls", Color(0xFF21262D)) { queueText("ls\r") }
+          CtrlBtn("ble", Color(0xFF21262D)) { queueText("ble\r") }
           CtrlBtn("pinout", Color(0xFF21262D)) { queueText("pinout\r") }
           CtrlBtn("clear", Color(0xFF21262D)) { queueText("clear\r") }
         }

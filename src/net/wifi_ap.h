@@ -20,7 +20,10 @@ void os_input_push(uint8_t ch);
 void os_input_push_str(const char *s);
 int  os_getchar_timeout_us(uint32_t timeout_us);
 
-/* Output mirror ring for smartphone display */
-void wifi_log_output(const char *s, size_t len);
+/* Output mirror ring for smartphone / BLE display */
+void     wifi_log_output(const char *s, size_t len);
+uint32_t wifi_tx_available(uint32_t pos);
+uint32_t wifi_tx_recent_start(uint32_t max_back);
+size_t   wifi_tx_read_from(uint32_t *pos, uint8_t *out, size_t max_len);
 
 #endif /* PICO_OS_WIFI_AP_H */

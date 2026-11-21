@@ -48,11 +48,12 @@ int main(void) {
         shell_seed_samples();
     }
 
-    console_puts("Booting PicoOS v0.6...\n", COLOR_CYAN);
+    console_puts("Booting PicoOS v0.7...\n", COLOR_CYAN);
     console_puts("Arch : ARM Cortex-M0+\n", COLOR_WHITE);
     console_puts("Disp : ST7735S 160x128\n", COLOR_WHITE);
     console_puts("FS   : PicoFS 256KB OK\n", COLOR_GREEN);
     console_puts("HW   : GPIO/PWM/ADC/I2C/SPI\n", COLOR_GREEN);
+    console_puts("BLE  : PicoOS-BLE\n", COLOR_GREEN);
     console_puts("WiFi : PicoOS-AP (4.1)\n", COLOR_CYAN);
     console_puts("Pass : picoos123\n", COLOR_YELLOW);
 
