@@ -31,8 +31,11 @@ import serial, time
 for p in '''$($ports -join ' ')'''.split():
     try:
         s = serial.Serial(p, 115200, timeout=0.5)
+        s.dtr = True
+        time.sleep(0.25)
         s.write(b'\r\nbootsel\r\n')
         s.flush()
+        time.sleep(0.15)
         s.close()
     except Exception:
         pass
@@ -41,7 +44,7 @@ for p in '''$($ports -join ' ')'''.split():
         Write-Host "Waiting for RPI-RP2 drive (hold BOOTSEL and plug in USB if needed)..."
     }
 
-    for ($i = 0; $i -lt 25; $i++) {
+    for ($i = 0; $i -lt 50; $i++) {
         Start-Sleep -Milliseconds 400
         $drive = Get-BootselDrive
         if ($drive) { break }
