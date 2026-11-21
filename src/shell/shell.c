@@ -3,6 +3,7 @@
 #include "../drivers/st7735.h"
 #include "../drivers/hw_io.h"
 #include "../ui/console.h"
+#include "../ui/window.h"
 #include "../fs/fs.h"
 #include "../apps/vi.h"
 #include "../apps/cc.h"
@@ -359,6 +360,7 @@ static void exec_command(char *line) {
         printf("  i2c scan [bus sda scl]      Scan I2C bus devices\r\n");
         printf("  ble                  Show BLE UART connection status\r\n");
         printf("  wifi                 Show Wi-Fi AP & BLE status\r\n");
+        printf("  win [open|close]     Manage GUI window / return to CLI\r\n");
         printf("  samples              Create hello/fib/gfx/sensor/game.c\r\n");
         printf("  bootsel              Reboot into USB BOOTSEL mode\r\n");
         console_puts("help: see serial\n", COLOR_YELLOW);
@@ -385,10 +387,24 @@ static void exec_command(char *line) {
         console_printf(COLOR_WHITE, "Up: %lus (%lums)\n",
                        (unsigned long)(ticks / 1000), (unsigned long)ticks);
     } else if (strcmp(line, "clear") == 0) {
+        win_close();
+        console_set_gui_mode(false);
         console_set_statusbar_active(true);
         console_clear();
         console_redraw_all();
         printf("TFT cleared.\r\n");
+    } else if (strcmp(line, "win") == 0 || strncmp(line, "win ", 4) == 0) {
+        char *sub = (strlen(line) > 4) ? skip_spaces(line + 4) : "";
+        if (strcmp(sub, "close") == 0) {
+            win_close();
+            printf("GUI window closed.\r\n");
+        } else if (strncmp(sub, "open", 4) == 0) {
+            char *title = skip_spaces(sub + 4);
+            win_open(title[0] ? title : "Window");
+            printf("GUI window opened.\r\n");
+        } else {
+            printf("GUI window: %s\r\n", win_is_open() ? "OPEN" : "CLOSED (CLI mode)");
+        }
     } else if (strncmp(line, "echo ", 5) == 0) {
         printf("%s\r\n", line + 5);
         console_printf(COLOR_WHITE, "%s\n", line + 5);

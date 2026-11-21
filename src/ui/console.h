@@ -8,6 +8,8 @@ void console_init(void);
 void console_clear(void);
 void console_redraw_all(void);
 void console_set_statusbar_active(bool active);
+void console_set_gui_mode(bool active);
+bool console_is_gui_mode(void);
 void console_puts(const char *str, uint16_t color);
 void console_printf(uint16_t color, const char *fmt, ...);
 void console_preview_input(const char *prompt, const char *buf);

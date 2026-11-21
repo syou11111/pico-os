@@ -21,6 +21,7 @@ add_executable(pico_os
     src/net/wifi_ap.c
     src/net/ble_uart.c
     src/ui/console.c
+    src/ui/window.c
     src/fs/fs.c
     src/transfer/transfer.c
     src/shell/shell.c

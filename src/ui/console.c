@@ -17,8 +17,10 @@ static uint16_t line_colors[CONSOLE_ROWS];
 static int      cur_row = 0;
 static int      cur_col = 0;
 static bool     statusbar_active = true;
+static bool     gui_mode = false;
 
 static void redraw_row(int row) {
+    if (gui_mode) return;
     uint16_t y = CONSOLE_TOP + row * LINE_HEIGHT;
     st7735_fill_rect(0, y, ST7735_WIDTH, LINE_HEIGHT, BG_COLOR);
     if (lines[row][0] != '\0') {
@@ -53,19 +55,21 @@ static void newline(uint16_t next_color) {
 }
 
 void console_init(void) {
+    gui_mode = false;
     statusbar_active = true;
     st7735_fill_screen(BG_COLOR);
     st7735_fill_rect(0, 0, ST7735_WIDTH, STATUS_BAR_H, COLOR_NAVY);
     st7735_draw_hline(0, STATUS_BAR_H, ST7735_WIDTH, COLOR_TEAL);
-    st7735_draw_string(4, 3, "PicoOS v0.6", COLOR_CYAN, COLOR_NAVY, 1);
+    st7735_draw_string(4, 3, "PicoOS v0.7", COLOR_CYAN, COLOR_NAVY, 1);
     console_clear();
 }
 
 void console_redraw_all(void) {
+    if (gui_mode) return;
     st7735_fill_screen(BG_COLOR);
     st7735_fill_rect(0, 0, ST7735_WIDTH, STATUS_BAR_H, COLOR_NAVY);
     st7735_draw_hline(0, STATUS_BAR_H, ST7735_WIDTH, COLOR_TEAL);
-    st7735_draw_string(4, 3, "PicoOS v0.6", COLOR_CYAN, COLOR_NAVY, 1);
+    st7735_draw_string(4, 3, "PicoOS v0.7", COLOR_CYAN, COLOR_NAVY, 1);
     for (int r = 0; r < CONSOLE_ROWS; r++) {
         redraw_row(r);
     }
@@ -76,6 +80,14 @@ void console_set_statusbar_active(bool active) {
     statusbar_active = active;
 }
 
+void console_set_gui_mode(bool active) {
+    gui_mode = active;
+}
+
+bool console_is_gui_mode(void) {
+    return gui_mode;
+}
+
 void console_clear(void) {
     memset(lines, 0, sizeof(lines));
     for (int r = 0; r < CONSOLE_ROWS; r++) {
@@ -83,7 +95,9 @@ void console_clear(void) {
     }
     cur_row = 0;
     cur_col = 0;
-    st7735_fill_rect(0, CONSOLE_TOP - 2, ST7735_WIDTH, ST7735_HEIGHT - (CONSOLE_TOP - 2), BG_COLOR);
+    if (!gui_mode) {
+        st7735_fill_rect(0, CONSOLE_TOP - 2, ST7735_WIDTH, ST7735_HEIGHT - (CONSOLE_TOP - 2), BG_COLOR);
+    }
 }
 
 void console_puts(const char *str, uint16_t color) {

@@ -3,6 +3,7 @@
 #include "../drivers/st7735.h"
 #include "../drivers/hw_io.h"
 #include "../ui/console.h"
+#include "../ui/window.h"
 #include "../fs/fs.h"
 #include "../net/wifi_ap.h"
 #include "pico/stdlib.h"
@@ -15,6 +16,17 @@
 
 extern volatile bool g_led_auto_blink;
 extern void set_onboard_led(bool on);
+
+static char vm_prog_title[24] = "App";
+static bool vm_used_gui = false;
+static bool vm_used_key_poll = false;
+
+static void ensure_gui_window(void) {
+    if (!vm_used_gui) {
+        vm_used_gui = true;
+        win_open(vm_prog_title);
+    }
+}
 
 /* ---------- Bytecode Executable Format (PXE1) ---------- */
 #define PXE_MAGIC       0x31455850UL /* "PXE1" */
@@ -1650,23 +1662,20 @@ static int32_t vm_syscall(int sys_id, int argc, const int32_t *args, uint16_t da
             }
             return 0;
         case SYS_CLS:
-            console_set_statusbar_active(false);
-            st7735_fill_screen((uint16_t)(argc >= 1 ? args[0] : 0));
+            ensure_gui_window();
+            win_cls((uint16_t)(argc >= 1 ? args[0] : 0));
             return 0;
         case SYS_RECT:
             if (argc >= 5) {
-                console_set_statusbar_active(false);
-                st7735_fill_rect((uint16_t)args[0], (uint16_t)args[1],
-                                 (uint16_t)args[2], (uint16_t)args[3],
-                                 (uint16_t)args[4]);
+                ensure_gui_window();
+                win_rect(args[0], args[1], args[2], args[3], (uint16_t)args[4]);
             }
             return 0;
         case SYS_TEXT:
             if (argc >= 5 && (uint32_t)args[2] < VM_MEM_SIZE) {
-                console_set_statusbar_active(false);
+                ensure_gui_window();
                 const char *s = (const char *)&vm_mem[(uint32_t)args[2]];
-                st7735_draw_string((uint16_t)args[0], (uint16_t)args[1], s,
-                                   (uint16_t)args[3], (uint16_t)args[4], 1);
+                win_text(args[0], args[1], s, (uint16_t)args[3], (uint16_t)args[4]);
             }
             return 0;
         case SYS_RGB:
@@ -1682,11 +1691,12 @@ static int32_t vm_syscall(int sys_id, int argc, const int32_t *args, uint16_t da
             return (int32_t)(vm_rng_state & 0x7FFFFFFFUL);
         case SYS_PIXEL:
             if (argc >= 3) {
-                console_set_statusbar_active(false);
-                st7735_draw_pixel((uint16_t)args[0], (uint16_t)args[1], (uint16_t)args[2]);
+                ensure_gui_window();
+                win_pixel(args[0], args[1], (uint16_t)args[2]);
             }
             return 0;
         case SYS_KEY_POLL:
+            vm_used_key_poll = true;
             return vm_key_poll();
         case SYS_PIN_MODE:
             return (argc >= 2) ? hw_pin_mode(args[0], args[1]) : -1;
@@ -1898,6 +1908,11 @@ int cc_run_file(const char *bin_name) {
     int csp = 0;
     uint32_t steps = 0;
     vm_aborted = false;
+    vm_used_gui = false;
+    vm_used_key_poll = false;
+    if (strcmp(bin_name, "a.out") != 0 || vm_prog_title[0] == '\0') {
+        snprintf(vm_prog_title, sizeof(vm_prog_title), "%.21s", bin_name);
+    }
     vm_keyq_head = 0;
     vm_keyq_tail = 0;
     vm_rng_state = os_get_ticks() | 1U;
@@ -2106,20 +2121,35 @@ int cc_run_file(const char *bin_name) {
 
 vm_done:
     if (vm_aborted) {
+        if (vm_used_gui) win_close();
         printf("\r\n^C (aborted)\r\n");
         console_puts("^C aborted\n", COLOR_YELLOW);
+        vm_prog_title[0] = '\0';
         return -1;
     }
+    if (vm_used_gui) {
+        if (vm_used_key_poll) {
+            os_sleep_ms(1200);
+            win_close();
+        } else {
+            printf("[GUI window open: 'win close' or 'clear' to return to CLI]\r\n");
+        }
+    }
+    vm_prog_title[0] = '\0';
     if (exit_code != 0) {
         printf("[exit: %ld]\r\n", (long)exit_code);
     }
     return exit_code;
 
 stack_err:
+    if (vm_used_gui) win_close();
+    vm_prog_title[0] = '\0';
     printf("\r\nVM error: stack overflow/underflow\r\n");
     return -1;
 
 mem_err:
+    if (vm_used_gui) win_close();
+    vm_prog_title[0] = '\0';
     printf("\r\nVM error: memory out of bounds\r\n");
     return -1;
 }
@@ -2128,6 +2158,7 @@ int cc_compile_and_run(const char *src_name) {
     if (cc_compile_file(src_name, "a.out") != 0) {
         return -1;
     }
+    snprintf(vm_prog_title, sizeof(vm_prog_title), "%.21s", src_name ? src_name : "a.out");
     return cc_run_file("a.out");
 }
 
